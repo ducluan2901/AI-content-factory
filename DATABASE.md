@@ -333,6 +333,22 @@ approval wall holds all the way to the post.
 the platform; none is scraped or estimated. The classification (winner, promising, average, loser) is derived
 at read time from these rows, never stored.
 
+### 4.21 `affiliate_product`, `affiliate_click` — Sprint 6
+
+`affiliate_product`: `id` (`prod_…`), `name`, `seller`, `program`, `code`, `link`, `commission_pct`, `status`
+(`active` | `paused`), `notes`, timestamps. `affiliate_click`: `product_id` FK, `publication_id` FK (nullable),
+`clicks` (>= 0), `recorded_on` (YYYY-MM-DD), `source`. A click count is typed in from the program's dashboard.
+`publication` gains `affiliate_product_id` and `disclosure_confirmed`; the API refuses a post with an affiliate
+link unless the disclosure is confirmed.
+
+### 4.22 `revenue_record` — Sprint 6
+
+`id` (`rev_…`), `kind` (`affiliate` | `service` | `booking` | `platform_ad` | `cost`), `status` (`estimated` |
+`pending` | `approved` | `paid` | `rejected`), `amount` (>= 0; a `cost` is money out), `currency` (`VND` | `USD`),
+`market`, `orders` (affiliate only), `publication_id`, `product_id`, `occurred_on`, `note`, timestamps. All CHECK
+constraints. Only approved and paid count as earned in the summary. The pipeline's own LLM cost lives in
+`content_job.total_cost_usd` and `stage_run.cost_usd`, and is reported beside, not inside, these records.
+
 ## 5. Filesystem layout (mirrors the DB)
 
 ```

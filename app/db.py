@@ -204,6 +204,9 @@ class Publication(Base):
     url: Mapped[str | None]
     published_at: Mapped[str]  # UTC ISO-8601, when it went live; milestones count from here
     notes: Mapped[str | None]
+    # an affiliate link in the post needs a disclosure where the platform or the law asks for one (plan §12.4)
+    affiliate_product_id: Mapped[str | None] = mapped_column(ForeignKey("affiliate_product.id", ondelete="SET NULL"))
+    disclosure_confirmed: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[str] = mapped_column(default=now)
 
 
@@ -230,6 +233,70 @@ class VideoMetric(Base):
     saves: Mapped[int] = mapped_column(default=0)
     follows: Mapped[int] = mapped_column(default=0)
     recorded_at: Mapped[str] = mapped_column(default=now)
+
+
+REVENUE_KINDS = ("affiliate", "service", "booking", "platform_ad", "cost")  # "cost" is an operating cost, shown as a negative
+REVENUE_STATUSES = ("estimated", "pending", "approved", "paid", "rejected")  # plan §3.2: an order is not an approved order
+CURRENCIES = ("VND", "USD")
+
+
+class AffiliateProduct(Base):
+    """A product you may link in a post. Never invent specs or claims for it: the script only uses the facts you give."""
+
+    __tablename__ = "affiliate_product"
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("prod"))
+    tenant_id: Mapped[str] = mapped_column(default="local")
+    name: Mapped[str]
+    seller: Mapped[str | None]
+    program: Mapped[str | None]  # the affiliate program or marketplace that pays the commission
+    code: Mapped[str | None]  # the program's own product id
+    link: Mapped[str | None]
+    commission_pct: Mapped[float | None]
+    status: Mapped[str] = mapped_column(default="active")  # active | paused
+    notes: Mapped[str | None]
+    created_at: Mapped[str] = mapped_column(default=now)
+    updated_at: Mapped[str] = mapped_column(default=now, onupdate=now)
+
+
+class AffiliateClick(Base):
+    """Click counts copied from the program's dashboard. A count of clicks is never an order."""
+
+    __tablename__ = "affiliate_click"
+    __table_args__ = (CheckConstraint("clicks >= 0", name="click_count"),)
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("clk"))
+    product_id: Mapped[str] = mapped_column(ForeignKey("affiliate_product.id", ondelete="CASCADE"))
+    publication_id: Mapped[str | None] = mapped_column(ForeignKey("publication.id", ondelete="SET NULL"))
+    clicks: Mapped[int]
+    recorded_on: Mapped[str]  # YYYY-MM-DD
+    source: Mapped[str | None]  # e.g. the dashboard or campaign the number came from
+    created_at: Mapped[str] = mapped_column(default=now)
+
+
+class RevenueRecord(Base):
+    """Money in or out, as typed from a statement or an invoice. Amount is always positive; kind 'cost' is money out."""
+
+    __tablename__ = "revenue_record"
+    __table_args__ = (
+        CheckConstraint("kind IN " + str(REVENUE_KINDS), name="revenue_kind"),
+        CheckConstraint("status IN " + str(REVENUE_STATUSES), name="revenue_status"),
+        CheckConstraint("currency IN " + str(CURRENCIES), name="revenue_currency"),
+        CheckConstraint("amount >= 0", name="revenue_amount"),
+        Index("ix_revenue_kind_status", "kind", "status"),
+    )
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("rev"))
+    tenant_id: Mapped[str] = mapped_column(default="local")
+    kind: Mapped[str]
+    status: Mapped[str] = mapped_column(default="pending")
+    amount: Mapped[float]
+    currency: Mapped[str] = mapped_column(default="VND")
+    market: Mapped[str] = mapped_column(default="vn")
+    orders: Mapped[int | None]  # affiliate: how many orders this amount comes from
+    publication_id: Mapped[str | None] = mapped_column(ForeignKey("publication.id", ondelete="SET NULL"))
+    product_id: Mapped[str | None] = mapped_column(ForeignKey("affiliate_product.id", ondelete="SET NULL"))
+    occurred_on: Mapped[str]  # YYYY-MM-DD
+    note: Mapped[str | None]
+    created_at: Mapped[str] = mapped_column(default=now)
+    updated_at: Mapped[str] = mapped_column(default=now, onupdate=now)
 
 
 def migrate(database_url: str) -> str:

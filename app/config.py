@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     storage_dir: Path = Path("./storage")
     fixture_dir: Path = ROOT / "tests" / "fixtures"
     stage_timeout_s: int = 600
+    # optional: VND per USD, only to show one combined VND figure next to the per-currency totals; never assumed
+    usd_vnd_rate: float | None = None
 
     def check(self) -> None:
         """Boot guard: the subscription-backed CLI is a dev tool, never a client-facing backend (PRD §8)."""

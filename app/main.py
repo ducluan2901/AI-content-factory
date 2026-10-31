@@ -3,6 +3,7 @@ import asyncio
 import json
 import shutil
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -10,10 +11,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
-from app import analytics, pipeline, planner
+from app import analytics, pipeline, planner, revenue
 from app.config import Settings
-from app.db import (MILESTONES, SCORE_COMPONENTS, Approval, Channel, ContentIdea, ContentJob, Publication, StageRun, Trend, VideoMetric,
-                    make_sessionmaker, migrate, now, row_dict)
+from app.db import (MILESTONES, SCORE_COMPONENTS, AffiliateClick, AffiliateProduct, Approval, Channel, ContentIdea, ContentJob, Publication,
+                    RevenueRecord, StageRun, Trend, VideoMetric, make_sessionmaker, migrate, now, row_dict)
 from app.providers import build_llm, build_stock, build_tts
 
 FORMAT_RE = "^(comedy|facts|gadget)$"
@@ -103,6 +104,55 @@ class PublicationIn(BaseModel):
     url: str | None = Field(default=None, max_length=1000)
     published_at: str | None = None  # UTC ISO-8601; default: now
     notes: str | None = Field(default=None, max_length=2000)
+    affiliate_product_id: str | None = None  # an affiliate link in this post
+    disclosure_confirmed: bool = False  # required when there is an affiliate link
+
+
+class ProductIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    seller: str | None = Field(default=None, max_length=200)
+    program: str | None = Field(default=None, max_length=200)
+    code: str | None = Field(default=None, max_length=100)
+    link: str | None = Field(default=None, max_length=1000)
+    commission_pct: float | None = Field(default=None, ge=0, le=100)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class ProductPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    seller: str | None = Field(default=None, max_length=200)
+    link: str | None = Field(default=None, max_length=1000)
+    commission_pct: float | None = Field(default=None, ge=0, le=100)
+    status: str | None = Field(default=None, pattern="^(active|paused)$")
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class ClickIn(BaseModel):
+    product_id: str
+    publication_id: str | None = None
+    clicks: int = Field(ge=0)
+    recorded_on: str | None = None  # YYYY-MM-DD, default today
+    source: str | None = Field(default=None, max_length=200)
+
+
+class RevenueIn(BaseModel):
+    kind: str = Field(pattern="^(affiliate|service|booking|platform_ad|cost)$")
+    amount: float = Field(ge=0)  # always positive; kind "cost" is money out
+    currency: str = Field(default="VND", pattern="^(VND|USD)$")
+    status: str = Field(default="pending", pattern="^(estimated|pending|approved|paid|rejected)$")
+    market: str = Field(default="vn", pattern="^(vn|global)$")
+    orders: int | None = Field(default=None, ge=0)
+    publication_id: str | None = None
+    product_id: str | None = None
+    occurred_on: str | None = None  # YYYY-MM-DD, default today
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class RevenuePatch(BaseModel):
+    status: str | None = Field(default=None, pattern="^(estimated|pending|approved|paid|rejected)$")
+    amount: float | None = Field(default=None, ge=0)
+    orders: int | None = Field(default=None, ge=0)
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class MetricIn(BaseModel):
@@ -412,7 +462,13 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
                 analytics.parse_ts(when)
             except ValueError:
                 raise HTTPException(422, "published_at must be an ISO-8601 timestamp")
-            pub = Publication(job_id=job_id, channel_id=job.channel_id, platform=body.platform, url=body.url, published_at=when, notes=body.notes)
+            if body.affiliate_product_id:
+                get_or_404(db, AffiliateProduct, body.affiliate_product_id)
+                if not body.disclosure_confirmed:
+                    raise HTTPException(422, "a post with an affiliate link needs a disclosure where the platform or the law asks for one: "
+                                             "add it to the post, then send disclosure_confirmed=true")
+            pub = Publication(job_id=job_id, channel_id=job.channel_id, platform=body.platform, url=body.url, published_at=when, notes=body.notes,
+                              affiliate_product_id=body.affiliate_product_id, disclosure_confirmed=body.disclosure_confirmed)
             db.add(pub)
             db.commit()
             return pub_out(db, pub)
@@ -455,6 +511,95 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
             raise HTTPException(422, f"milestone must be one of {list(MILESTONES)}")
         with sm() as db:
             return analytics.format_summary(db, milestone, channel_id)
+
+    # ---------------------------------------------------------------- affiliate, revenue and cost (Sprint 6)
+
+    def day(value: str | None) -> str:
+        if value is None:
+            return datetime.now(timezone.utc).date().isoformat()
+        try:
+            return date.fromisoformat(value).isoformat()
+        except ValueError:
+            raise HTTPException(422, "date must be YYYY-MM-DD")
+
+    @app.post("/affiliate/products", status_code=201)
+    def create_product(body: ProductIn):
+        with sm() as db:
+            prod = AffiliateProduct(**body.model_dump())
+            db.add(prod)
+            db.commit()
+            return row_dict(prod)
+
+    @app.get("/affiliate/products")
+    def list_products():
+        with sm() as db:
+            return revenue.product_list(db)
+
+    @app.patch("/affiliate/products/{prod_id}")
+    def patch_product(prod_id: str, body: ProductPatch):
+        with sm() as db:
+            prod = get_or_404(db, AffiliateProduct, prod_id)
+            for k, v in required_or_422(body, ("name", "status")).items():
+                setattr(prod, k, v)
+            db.commit()
+            return row_dict(prod)
+
+    @app.post("/affiliate/clicks", status_code=201)
+    def add_clicks(body: ClickIn):
+        with sm() as db:
+            get_or_404(db, AffiliateProduct, body.product_id)
+            if body.publication_id:
+                get_or_404(db, Publication, body.publication_id)
+            row = AffiliateClick(product_id=body.product_id, publication_id=body.publication_id, clicks=body.clicks,
+                                 recorded_on=day(body.recorded_on), source=body.source)
+            db.add(row)
+            db.commit()
+            return row_dict(row)
+
+    @app.post("/revenue", status_code=201)
+    def add_revenue(body: RevenueIn):
+        with sm() as db:
+            if body.publication_id:
+                get_or_404(db, Publication, body.publication_id)
+            if body.product_id:
+                get_or_404(db, AffiliateProduct, body.product_id)
+            if body.kind != "affiliate" and (body.orders or body.product_id):
+                raise HTTPException(422, "orders and product_id belong to affiliate records only")
+            rec = RevenueRecord(**body.model_dump(exclude={"occurred_on"}), occurred_on=day(body.occurred_on))
+            db.add(rec)
+            db.commit()
+            return row_dict(rec)
+
+    @app.get("/revenue")
+    def list_revenue(kind: str | None = None, status: str | None = None, currency: str | None = None, limit: int = 300):
+        stmt = select(RevenueRecord)
+        for col, val in ((RevenueRecord.kind, kind), (RevenueRecord.status, status), (RevenueRecord.currency, currency)):
+            if val:
+                stmt = stmt.where(col == val)
+        with sm() as db:
+            return [row_dict(r) for r in db.scalars(stmt.order_by(RevenueRecord.occurred_on.desc(), RevenueRecord.created_at.desc()).limit(limit))]
+
+    @app.patch("/revenue/{rev_id}")
+    def patch_revenue(rev_id: str, body: RevenuePatch):
+        with sm() as db:
+            rec = get_or_404(db, RevenueRecord, rev_id)
+            data = required_or_422(body, ("status", "amount"))
+            try:
+                if "status" in data:
+                    revenue.check_transition(rec.status, data["status"])
+            except revenue.RevenueError as e:
+                raise HTTPException(409, str(e))
+            if "amount" in data and rec.status in ("approved", "paid", "rejected"):
+                raise HTTPException(409, f"the amount of a {rec.status} record is fixed; add a correcting record instead")
+            for k, v in data.items():
+                setattr(rec, k, v)
+            db.commit()
+            return row_dict(rec)
+
+    @app.get("/revenue/summary")
+    def revenue_summary():
+        with sm() as db:
+            return revenue.summary(db, s.usd_vnd_rate)
 
     @app.post("/jobs/{job_id}/run")
     async def rerun(job_id: str, body: RerunIn):
