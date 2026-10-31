@@ -184,6 +184,54 @@ class Approval(Base):
     created_at: Mapped[str] = mapped_column(default=now)
 
 
+MILESTONES = ("24h", "72h", "7d")  # plan §4.3: results are read at these ages of a post
+PLATFORMS = ("tiktok", "youtube_shorts", "facebook_reels")
+
+
+class Publication(Base):
+    """A manual upload of an exported video. The system never posts anything; a person records where it went."""
+
+    __tablename__ = "publication"
+    __table_args__ = (
+        CheckConstraint("platform IN " + str(PLATFORMS), name="publication_platform"),
+        Index("ix_publication_job", "job_id"),
+    )
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("pub"))
+    tenant_id: Mapped[str] = mapped_column(default="local")
+    job_id: Mapped[str] = mapped_column(ForeignKey("content_job.id", ondelete="CASCADE"))
+    channel_id: Mapped[str | None] = mapped_column(ForeignKey("channel.id"))
+    platform: Mapped[str]
+    url: Mapped[str | None]
+    published_at: Mapped[str]  # UTC ISO-8601, when it went live; milestones count from here
+    notes: Mapped[str | None]
+    created_at: Mapped[str] = mapped_column(default=now)
+
+
+class VideoMetric(Base):
+    """Numbers a person copies from the platform at one milestone. One row per publication and milestone; a
+    correction replaces it. Nothing here is estimated or scraped."""
+
+    __tablename__ = "video_metric"
+    __table_args__ = (
+        UniqueConstraint("publication_id", "milestone"),
+        CheckConstraint("milestone IN " + str(MILESTONES), name="metric_milestone"),
+        CheckConstraint("completion_pct IS NULL OR completion_pct BETWEEN 0 AND 100", name="metric_completion"),
+        CheckConstraint("views >= 0", name="metric_views"),
+    )
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("met"))
+    publication_id: Mapped[str] = mapped_column(ForeignKey("publication.id", ondelete="CASCADE"))
+    milestone: Mapped[str]
+    views: Mapped[int]
+    avg_watch_s: Mapped[float | None]
+    completion_pct: Mapped[float | None]  # share of viewers who watched to the end, 0-100
+    likes: Mapped[int] = mapped_column(default=0)
+    comments: Mapped[int] = mapped_column(default=0)
+    shares: Mapped[int] = mapped_column(default=0)
+    saves: Mapped[int] = mapped_column(default=0)
+    follows: Mapped[int] = mapped_column(default=0)
+    recorded_at: Mapped[str] = mapped_column(default=now)
+
+
 def migrate(database_url: str) -> str:
     """Bring the database to the latest Alembic revision (DATABASE.md §6). Returns the head revision id.
 

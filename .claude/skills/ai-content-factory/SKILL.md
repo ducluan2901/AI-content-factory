@@ -33,7 +33,8 @@ Bốn tài liệu ở gốc repo là nguồn sự thật. **Đừng suy diễn t
 - Sprint 1 (channels, Trend Radar, Content Planner, TrendScore, Alembic) đã merge vào `main`.
 - Sprint 2 (cổng duyệt kịch bản `SCRIPT_REVIEW`, sửa tay, tạo lại kèm ghi chú, prompt theo format có `prompt_version`, tạo job hàng loạt) đã merge vào `main`. Prompt theo format nằm ở `app/prompts/format_*.md`.
 - Sprint 3 (ảnh stock Pexels có fallback thẻ chữ và ghi giấy phép, hiệu ứng Ken Burns, chuẩn hoá âm lượng ~-14 LUFS) xong trên nhánh `sprint-3-visuals-audio`. 
-- Sprint 4 (gắn cứng phụ đề `burn_subtitles`, kiểm tra từ khoá rủi ro `app/safety_terms.txt`, màn hình duyệt có QC, ảnh từng cảnh kèm giấy phép, phụ đề) xong trên nhánh `sprint-4-qc-subtitles`.
+- Sprint 4 (gắn cứng phụ đề `burn_subtitles`, kiểm tra từ khoá rủi ro `app/safety_terms.txt`, màn hình duyệt có QC, ảnh từng cảnh kèm giấy phép, phụ đề) đã merge vào `main`.
+- Sprint 5 (ghi bài đăng tay `publication`, số liệu 24h/72h/7d `video_metric`, phân loại winner/promising/average/loser theo trung vị 10 video gần nhất, danh sách mốc đến hạn, tổng hợp theo format; trang `ui/pages/3_Analytics.py`) xong trên nhánh `sprint-5-analytics`. Chưa có "commercial winner": cần dữ liệu click/đơn của module affiliate.
 - Week 1 walking skeleton đã chạy được (README.md mục "What is built"): Script → Voice → Visuals → Subtitles → Render → Quality → duyệt → export. Research, Strategy, SEO riêng, stock footage và Alembic chưa làm.
 
 ## Năm luật không được phá

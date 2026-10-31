@@ -318,6 +318,21 @@ Creating a job from an idea copies the channel's language and the idea's format,
 onto the job, sets the idea to `scripted`, and moves a `new`/`reviewed` trend to `selected`. That is the
 traceability chain the plan asks for: trend → idea → job → video.
 
+### 4.19 `publication` — Sprint 5
+
+`id` (`pub_…`), `tenant_id`, `job_id` FK, `channel_id` FK, `platform` (`tiktok` | `youtube_shorts` |
+`facebook_reels`, CHECK), `url`, `published_at` (UTC; the milestones count from here), `notes`, `created_at`.
+A manual record: the system never posts. The API only accepts a job whose status is `EXPORTED`, so the human
+approval wall holds all the way to the post.
+
+### 4.20 `video_metric` — Sprint 5
+
+`id` (`met_…`), `publication_id` FK, `milestone` (`24h` | `72h` | `7d`, CHECK), `views` (>= 0), `avg_watch_s`,
+`completion_pct` (0..100, CHECK), `likes`, `comments`, `shares`, `saves`, `follows`, `recorded_at`.
+`UNIQUE (publication_id, milestone)`: entering a milestone again corrects it. Every figure is typed in from
+the platform; none is scraped or estimated. The classification (winner, promising, average, loser) is derived
+at read time from these rows, never stored.
+
 ## 5. Filesystem layout (mirrors the DB)
 
 ```

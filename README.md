@@ -183,6 +183,25 @@ a person decides. Edit the file freely.
 The Home page doubles as the Video Studio: before you approve it shows every quality check with a
 BLOCK / review / ok marker, a thumbnail per scene with its licence and attribution, and the subtitle file.
 
+## Sprint 5: manual post tracking and analytics
+
+Publishing stays manual: there is no code path to any platform. You upload by hand, then record the post
+(`POST /jobs/{id}/publications`, only for an approved and exported video) and copy the platform's numbers in at
+24 h, 72 h and 7 d (`PUT /publications/{id}/metrics/{milestone}`; sending it again corrects the entry).
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /publications` | recorded posts with their metrics and a classification per milestone |
+| `GET /analytics/due` | milestones whose time has come and that still have no numbers |
+| `GET /analytics/formats?milestone=7d` | per format: videos, median views, completion, engagement, label counts |
+
+Classification follows the 30-day plan §4.3. A video is a **winner** when its views beat the median of the last
+10 videos on the same channel and platform and completion is >= 25 % or engagement (likes + comments + shares
+over views) is >= 3 %. It is a **loser** when neither target is met, **promising** when retention is on target
+but views are not above the median, otherwise **average**. With fewer than 3 comparable videos nothing is called
+a winner, and the reason says so. "Commercial winner" needs click and order data, so it waits for the
+affiliate module. The Analytics page in the console shows all of this, plus which format has a signal.
+
 ## Security and content rules
 
 - Secrets only in environment variables; `.env` is git-ignored and never committed.
