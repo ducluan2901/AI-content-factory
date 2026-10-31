@@ -17,7 +17,8 @@ Rules:
 - No invented statistics, prices, dates, quotes or company claims. If a claim is not common knowledge, phrase it as an observation or a prediction instead of a fact.
 - narration is what the voice says; write it the way a person talks, short sentences, no emojis, no hashtags, no markdown.
 - on_screen_text is a short headline for the scene card, at most 8 words.
+- visual_query is 3 to 6 English keywords for a stock-photo search that matches the scene, e.g. "person typing laptop office night". Always in English, even when the narration is in {language_name}. Describe the scene's subject and setting, not the on-screen text.
 - title at most 90 characters. caption at most 300 characters. 3 to 8 hashtags, each starting with #.
 
 Return ONLY one JSON object, no prose and no code fences, with exactly this shape:
-{{"title": "...", "caption": "...", "hashtags": ["#..."], "scenes": [{{"narration": "...", "on_screen_text": "..."}}]}}
+{{"title": "...", "caption": "...", "hashtags": ["#..."], "scenes": [{{"narration": "...", "on_screen_text": "...", "visual_query": "..."}}]}}

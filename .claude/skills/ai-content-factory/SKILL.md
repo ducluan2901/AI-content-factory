@@ -31,7 +31,8 @@ Bốn tài liệu ở gốc repo là nguồn sự thật. **Đừng suy diễn t
   xem `README.md`.
 - Kế hoạch 30 ngày (`AI_Viral_Media_Network_30_Day_Plan.md`) thay thế thứ tự tuần ở BACKLOG Part B; ánh xạ ở BACKLOG Part F. Ba format `comedy` / `facts` / `gadget` thay cho ngách AI; thời lượng mặc định theo format, gate chấm theo target ±20%.
 - Sprint 1 (channels, Trend Radar, Content Planner, TrendScore, Alembic) đã merge vào `main`.
-- Sprint 2 (cổng duyệt kịch bản `SCRIPT_REVIEW`, sửa tay, tạo lại kèm ghi chú, prompt theo format có `prompt_version`, tạo job hàng loạt) xong trên nhánh `sprint-2-script-agent`. Prompt theo format nằm ở `app/prompts/format_*.md`.
+- Sprint 2 (cổng duyệt kịch bản `SCRIPT_REVIEW`, sửa tay, tạo lại kèm ghi chú, prompt theo format có `prompt_version`, tạo job hàng loạt) đã merge vào `main`. Prompt theo format nằm ở `app/prompts/format_*.md`.
+- Sprint 3 (ảnh stock Pexels có fallback thẻ chữ và ghi giấy phép, hiệu ứng Ken Burns, chuẩn hoá âm lượng ~-14 LUFS) xong trên nhánh `sprint-3-visuals-audio`. Gắn cứng phụ đề vào video chưa làm.
 - Week 1 walking skeleton đã chạy được (README.md mục "What is built"): Script → Voice → Visuals → Subtitles → Render → Quality → duyệt → export. Research, Strategy, SEO riêng, stock footage và Alembic chưa làm.
 
 ## Năm luật không được phá
