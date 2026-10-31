@@ -119,3 +119,23 @@ def test_files_endpoint_stays_inside_storage(client, tmp_path):
     assert client.get("/files/ok.txt").text == "fine"
     assert client.get("/files/..%2Fsecret.env").status_code == 404
     assert client.get(f"/files/{(tmp_path.parent / 'secret.env').as_posix()}").status_code == 404
+
+
+def test_patch_null_on_required_field_is_422(client):
+    ch = client.post("/channels", json={"name": "A"}).json()["id"]
+    idea = client.post("/ideas", json={"channel_id": ch, "title": "Một ý tưởng"}).json()["id"]
+    assert client.patch(f"/ideas/{idea}", json={"title": None}).status_code == 422
+    assert client.patch(f"/ideas/{idea}", json={"status": None}).status_code == 422
+    assert client.patch(f"/ideas/{idea}", json={"hook": None}).status_code == 200  # optional fields may be cleared
+    tr = client.post("/trends", json={"title": "Một trend", "velocity": 50}).json()["id"]
+    assert client.patch(f"/trends/{tr}", json={"status": None}).status_code == 422
+    assert client.patch(f"/trends/{tr}", json={"velocity": None}).json()["is_estimated"] is True  # unknown is allowed
+
+
+def test_ui_local_time_is_vietnam_time():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ui"))
+    from client import local
+    assert local("2026-10-31T01:00:00.000+00:00") == "2026-10-31 08:00"
+    assert local("2026-10-31T23:30:00+00:00", minutes=False) == "2026-11-01"  # crosses midnight in Vietnam
+    assert local(None) == ""

@@ -113,3 +113,4 @@ def test_batch_jobs_from_ideas(env):
     assert [j["idea_id"] for j in jobs] == ids
     assert all(wait(c, j["id"])["job"]["status"] == "SCRIPT_REVIEW" for j in jobs)
     assert c.post("/ideas/batch-jobs", json={"idea_ids": ["idea_missing"]}).status_code == 404
+    assert len(c.post("/ideas/batch-jobs", json={"idea_ids": [ids[0], ids[0]]}).json()) == 1  # duplicates queue one job

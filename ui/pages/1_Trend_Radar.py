@@ -1,25 +1,12 @@
 """Dashboard 1 (plan §13): trends, their scores with the component breakdown, and review status."""
-import os
-
-import httpx
 import streamlit as st
 
-API = os.environ.get("FACTORY_API", "http://127.0.0.1:8000")
+from client import api, local
+
 STATUSES = ["new", "reviewed", "selected", "rejected"]
 COMPONENTS = ["velocity", "retention_potential", "channel_fit", "monetization_potential", "production_feasibility"]
 st.set_page_config(page_title="Trend Radar", layout="wide")
 
-
-def api(method, path, **kw):
-    try:
-        r = httpx.request(method, f"{API}{path}", timeout=30, **kw)
-    except httpx.HTTPError as e:
-        st.error(f"API not reachable at {API}: {e}")
-        st.stop()
-    if r.status_code >= 400:
-        st.error(f"{r.status_code}: {r.json().get('detail', r.text)}")
-        return None
-    return r
 
 
 formats = api("GET", "/formats").json()
@@ -57,7 +44,7 @@ if not trends:
 
 st.dataframe(
     [{"id": t["id"], "score": t["trend_score"], "conf": t["confidence"], "est": t["is_estimated"], "status": t["status"], "format": t["format"],
-      "market": t["market"], "title": t["title"], "source": t["source"], "sample": t["is_sample"], "observed": (t["observed_at"] or "")[:10]} for t in trends],
+      "market": t["market"], "title": t["title"], "source": t["source"], "sample": t["is_sample"], "observed": local(t["observed_at"], minutes=False)} for t in trends],
     hide_index=True, use_container_width=True)
 
 sel = st.selectbox("Inspect", [t["id"] for t in trends], format_func=lambda i: next(t["title"] for t in trends if t["id"] == i))
@@ -69,7 +56,7 @@ with left:
     st.subheader(t["title"])
     st.write(t["summary"] or "")
     if t["source_url"]:
-        st.write(f"Source: {t['source']} · {t['source_url']} · observed {t['observed_at'][:16]}")
+        st.write(f"Source: {t['source']} · {t['source_url']} · observed {local(t['observed_at'])}")
     st.markdown(f"**TrendScore {t['trend_score']}** · confidence {t['confidence']} · {'estimated' if t['is_estimated'] else 'all components provided'}")
     st.dataframe(t["breakdown"], hide_index=True, use_container_width=True)
     if t["notes"]:

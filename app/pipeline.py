@@ -300,8 +300,10 @@ class Pipeline:
                 db.get(ContentJob, job.id).current_stage = name
                 db.commit()
             t0 = time.perf_counter()
-            with self.sm() as db:  # newest earlier output of this stage, superseded or not, for re-runs that build on it
-                prev = db.scalars(select(StageRun).where(StageRun.job_id == job.id, StageRun.stage == name, StageRun.status == "OK").order_by(StageRun.attempt.desc())).first()
+            prev = None
+            if name == "SCRIPT":  # a regenerated script builds on the newest earlier draft, superseded or not
+                with self.sm() as db:
+                    prev = db.scalars(select(StageRun).where(StageRun.job_id == job.id, StageRun.stage == name, StageRun.status == "OK").order_by(StageRun.attempt.desc())).first()
             ctx = {"settings": self.s, "llm": self.llm, "tts": self.tts, "stock": self.stock, "job": job, "dir": self.job_dir(job.id), "attempt": attempt, "up": up,
                    "previous": json.loads(prev.output_json) if prev else None, "voice": voice}
             try:

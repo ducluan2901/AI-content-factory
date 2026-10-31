@@ -1,24 +1,11 @@
 """Dashboard 2 (plan §13): channels, the idea backlog, and the jobs each idea produced."""
-import os
-
-import httpx
 import streamlit as st
 
-API = os.environ.get("FACTORY_API", "http://127.0.0.1:8000")
+from client import api, local
+
 IDEA_STATUSES = ["backlog", "selected", "scripted", "dropped"]
 st.set_page_config(page_title="Content Planner", layout="wide")
 
-
-def api(method, path, **kw):
-    try:
-        r = httpx.request(method, f"{API}{path}", timeout=30, **kw)
-    except httpx.HTTPError as e:
-        st.error(f"API not reachable at {API}: {e}")
-        st.stop()
-    if r.status_code >= 400:
-        st.error(f"{r.status_code}: {r.json().get('detail', r.text)}")
-        return None
-    return r
 
 
 formats = api("GET", "/formats").json()
@@ -105,5 +92,5 @@ else:
 st.subheader("Jobs by channel (content calendar, minimal)")
 jobs = api("GET", "/jobs").json()
 if jobs:
-    st.dataframe([{"created": j["created_at"][:16], "channel": name_of.get(j["channel_id"], "-"), "format": j["format"], "status": j["status"], "stage": j["current_stage"],
+    st.dataframe([{"created": local(j["created_at"]), "channel": name_of.get(j["channel_id"], "-"), "format": j["format"], "status": j["status"], "stage": j["current_stage"],
                    "title": j["title"], "len s": j["target_duration_s"], "idea": j["idea_id"], "cost $": round(j["total_cost_usd"], 4)} for j in jobs], hide_index=True, use_container_width=True)
