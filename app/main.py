@@ -10,9 +10,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
-from app import pipeline, planner
+from app import analytics, pipeline, planner
 from app.config import Settings
-from app.db import SCORE_COMPONENTS, Approval, Channel, ContentIdea, ContentJob, StageRun, Trend, make_sessionmaker, migrate, row_dict
+from app.db import (MILESTONES, SCORE_COMPONENTS, Approval, Channel, ContentIdea, ContentJob, Publication, StageRun, Trend, VideoMetric,
+                    make_sessionmaker, migrate, now, row_dict)
 from app.providers import build_llm, build_stock, build_tts
 
 FORMAT_RE = "^(comedy|facts|gadget)$"
@@ -95,6 +96,24 @@ class IdeaPatch(BaseModel):
 class DecisionIn(BaseModel):
     approved_by: str = Field(min_length=1, max_length=100)
     notes: str | None = Field(default=None, max_length=2000)
+
+
+class PublicationIn(BaseModel):
+    platform: str = Field(pattern="^(tiktok|youtube_shorts|facebook_reels)$")
+    url: str | None = Field(default=None, max_length=1000)
+    published_at: str | None = None  # UTC ISO-8601; default: now
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class MetricIn(BaseModel):
+    views: int = Field(ge=0)
+    avg_watch_s: float | None = Field(default=None, ge=0)
+    completion_pct: float | None = Field(default=None, ge=0, le=100)
+    likes: int = Field(default=0, ge=0)
+    comments: int = Field(default=0, ge=0)
+    shares: int = Field(default=0, ge=0)
+    saves: int = Field(default=0, ge=0)
+    follows: int = Field(default=0, ge=0)
 
 
 class RerunIn(BaseModel):
@@ -373,6 +392,69 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
             for j in jobs:
                 await queue.put(j.id)
             return [row_dict(j) for j in jobs]
+
+    # ---------------------------------------------------------------- manual post tracking and analytics (Sprint 5)
+
+    def pub_out(db, pub: Publication) -> dict:
+        metrics = db.scalars(select(VideoMetric).where(VideoMetric.publication_id == pub.id)).all()
+        by_ms = {m.milestone: row_dict(m) | {"classification": analytics.classify(db, pub, m)} for m in metrics}
+        return row_dict(pub) | {"title": db.get(ContentJob, pub.job_id).title, "metrics": {k: by_ms[k] for k in MILESTONES if k in by_ms}}
+
+    @app.post("/jobs/{job_id}/publications", status_code=201)
+    def create_publication(job_id: str, body: PublicationIn):
+        """Record where an exported video was posted by hand. Only an approved and exported job can be recorded."""
+        with sm() as db:
+            job = get_job(db, job_id)
+            if job.status != "EXPORTED":
+                raise HTTPException(409, f"job is {job.status}; only an exported video can be recorded as published")
+            when = body.published_at or now()
+            try:
+                analytics.parse_ts(when)
+            except ValueError:
+                raise HTTPException(422, "published_at must be an ISO-8601 timestamp")
+            pub = Publication(job_id=job_id, channel_id=job.channel_id, platform=body.platform, url=body.url, published_at=when, notes=body.notes)
+            db.add(pub)
+            db.commit()
+            return pub_out(db, pub)
+
+    @app.get("/publications")
+    def list_publications(job_id: str | None = None, channel_id: str | None = None, limit: int = 200):
+        stmt = select(Publication)
+        for col, val in ((Publication.job_id, job_id), (Publication.channel_id, channel_id)):
+            if val:
+                stmt = stmt.where(col == val)
+        with sm() as db:
+            return [pub_out(db, p) for p in db.scalars(stmt.order_by(Publication.published_at.desc()).limit(limit))]
+
+    @app.put("/publications/{pub_id}/metrics/{milestone}")
+    def put_metrics(pub_id: str, milestone: str, body: MetricIn):
+        """Numbers copied from the platform at 24h, 72h or 7d. Sending it again corrects the earlier entry."""
+        if milestone not in MILESTONES:
+            raise HTTPException(422, f"milestone must be one of {list(MILESTONES)}")
+        with sm() as db:
+            pub = get_or_404(db, Publication, pub_id)
+            m = db.scalars(select(VideoMetric).where(VideoMetric.publication_id == pub_id, VideoMetric.milestone == milestone)).first()
+            if m is None:
+                m = VideoMetric(publication_id=pub_id, milestone=milestone, **body.model_dump())
+                db.add(m)
+            else:
+                for k, v in body.model_dump().items():
+                    setattr(m, k, v)
+                m.recorded_at = now()
+            db.commit()
+            return pub_out(db, pub)
+
+    @app.get("/analytics/due")
+    def analytics_due():
+        with sm() as db:
+            return analytics.due_milestones(db)
+
+    @app.get("/analytics/formats")
+    def analytics_formats(milestone: str = "7d", channel_id: str | None = None):
+        if milestone not in MILESTONES:
+            raise HTTPException(422, f"milestone must be one of {list(MILESTONES)}")
+        with sm() as db:
+            return analytics.format_summary(db, milestone, channel_id)
 
     @app.post("/jobs/{job_id}/run")
     async def rerun(job_id: str, body: RerunIn):

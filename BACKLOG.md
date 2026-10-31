@@ -234,7 +234,7 @@ the approval wall and the risk list stay; the niche, the video length and the or
 | 2 | 4–7 | Script agent per format, prompt templates | **done** on branch `sprint-2-script-agent`: script gate, edit, regenerate with notes, per-format prompts with versions, batch jobs. Research for `facts` still open |
 | 3 | 8–12 | TTS, image, video renderer | **done** on branch `sprint-3-visuals-audio`: Pexels stock photos with card fallback and licence records, Ken Burns motion, loudness normalisation. Hardcoded subtitle burn-in still open |
 | 4 | 13–17 | QC, subtitles, Video Studio | **done** on branch `sprint-4-qc-subtitles`: subtitle burn-in, risky-claim check, richer approval screen. Grounded-claim check still waits for the research stage |
-| 5 | 18–23 | publishing, analytics | **manual** upload and manual metric entry; platform APIs need app review (D.3) |
+| 5 | 18–23 | publishing, analytics | **done** on branch `sprint-5-analytics`: manual post records, metrics at 24h/72h/7d, classification, due list, per-format summary. Platform APIs still need app review (D.3) |
 | 6 | 24–30 | affiliate, revenue dashboard | new tables from plan §8 |
 
 Changed decisions: three formats (`comedy`, `facts`, `gadget`) instead of the AI & Technology niche;
