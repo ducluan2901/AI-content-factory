@@ -79,6 +79,8 @@ def test_two_day_experiment_runs_judges_optimizes_and_reports(tmp_path, monkeypa
         # nothing was approved or exported by the agent, and the budget ledger adds up
         assert not any(c.get(f"/jobs/{j}").json()["job"]["status"] in ("APPROVED", "EXPORTED") for j in jobs)
         assert agent.spent() > 0 and "Kết luận thử." in report.read_text(encoding="utf-8")
+        shortlist = (exp / "shortlist.md").read_text(encoding="utf-8")
+        assert shortlist.count("## ") == 9 and d1[0]["job_id"] in shortlist
 
         # a restart resumes without redoing anything; the cap stops new spending
         again = Agent(s, exp, c, script_llm, tts, lambda m, e: FakeLLM(m, calls), day1_rounds=1, day2_rounds=1, hours_apart=0,
