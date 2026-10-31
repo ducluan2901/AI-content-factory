@@ -1,23 +1,10 @@
 """Operator console. HTTP client of the API only: it never touches the database or the pipeline."""
-import os
-
-import httpx
 import streamlit as st
 
-API = os.environ.get("FACTORY_API", "http://127.0.0.1:8000")
+from client import api, local
+
 st.set_page_config(page_title="AI Content Factory", layout="wide")
 
-
-def api(method: str, path: str, **kw):
-    try:
-        r = httpx.request(method, f"{API}{path}", timeout=60, **kw)
-    except httpx.HTTPError as e:
-        st.error(f"API not reachable at {API}: {e}. Start it with scripts\\run_api.ps1")
-        st.stop()
-    if r.status_code >= 400:
-        st.error(f"{r.status_code}: {r.json().get('detail', r.text)}")
-        return None
-    return r
 
 
 st.title("AI Content Factory")
@@ -47,7 +34,7 @@ if not jobs:
     st.stop()
 
 st.subheader("Queue")
-st.dataframe([{"id": j["id"], "status": j["status"], "stage": j["current_stage"], "title": j["title"], "cost $": round(j["total_cost_usd"], 4), "created": j["created_at"][:19]} for j in jobs], hide_index=True, use_container_width=True)
+st.dataframe([{"id": j["id"], "status": j["status"], "stage": j["current_stage"], "title": j["title"], "cost $": round(j["total_cost_usd"], 4), "created": local(j["created_at"])} for j in jobs], hide_index=True, use_container_width=True)
 
 ids = [j["id"] for j in jobs]
 default = ids.index(st.session_state["job"]) if st.session_state.get("job") in ids else 0

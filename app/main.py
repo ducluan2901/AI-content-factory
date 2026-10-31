@@ -160,6 +160,13 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
                   "anthropic_api_key": bool(s.anthropic_api_key and s.anthropic_api_key.get_secret_value()) if s.llm_provider == "anthropic_api" else "n/a"}
         return {"ok": all(checks.values()), "app_env": s.app_env, "llm_provider": s.llm_provider, "tts_provider": s.tts_provider, "checks": checks, "queue": queue.qsize()}
 
+    def required_or_422(body: BaseModel, required: tuple[str, ...]) -> dict:
+        """Fields the client sent; null is allowed only where the column may be empty."""
+        data = body.model_dump(exclude_unset=True)
+        if nulls := [k for k in required if k in data and data[k] is None]:
+            raise HTTPException(422, f"these fields cannot be null: {nulls}")
+        return data
+
     def get_or_404(db, model, id_: str):
         row = db.get(model, id_)
         if not row:
@@ -229,7 +236,7 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
     def patch_trend(trend_id: str, body: TrendPatch):
         with sm() as db:
             t = get_or_404(db, Trend, trend_id)
-            for k, v in body.model_dump(exclude_unset=True).items():
+            for k, v in required_or_422(body, ("status",)).items():
                 setattr(t, k, v)
             planner.rescore(t)
             db.commit()
@@ -261,7 +268,7 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
     def patch_idea(idea_id: str, body: IdeaPatch):
         with sm() as db:
             idea = get_or_404(db, ContentIdea, idea_id)
-            for k, v in body.model_dump(exclude_unset=True).items():
+            for k, v in required_or_422(body, ("title", "status", "target_duration_s")).items():
                 setattr(idea, k, v)
             db.commit()
             return row_dict(idea)
@@ -358,7 +365,7 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
     async def batch_jobs(body: BatchIn):
         """Queue several ideas at once (plan: 10 scripts per batch). Jobs stop at SCRIPT_REVIEW, so nothing is rendered unreviewed."""
         with sm() as db:
-            ideas = [get_or_404(db, ContentIdea, i) for i in body.idea_ids]
+            ideas = [get_or_404(db, ContentIdea, i) for i in dict.fromkeys(body.idea_ids)]  # same id twice = one job
             if dropped := [i.id for i in ideas if i.status == "dropped"]:
                 raise HTTPException(409, f"dropped ideas: {dropped}")
             jobs = [planner.job_from_idea(db, i, s.app_env) for i in ideas]
