@@ -12,6 +12,12 @@ W, H = 1080, 1920
 # keep text out of the platform UI chrome (TikTok/Reels caption + buttons)
 SAFE_TOP, SAFE_BOTTOM, SAFE_X = 260, 480, 90
 PALETTES = [((18, 24, 64), (88, 40, 160)), ((10, 40, 60), (20, 130, 140)), ((50, 14, 50), (180, 50, 90)), ((20, 20, 24), (60, 70, 110))]
+HIGHLIGHT = (255, 196, 60)
+
+
+def plain_words(text: str) -> set[str]:
+    """Lower-case words without punctuation, for matching a headline's words inside a spoken sentence."""
+    return {w for w in (re.sub(r"[\W_]+", "", x.lower()) for x in text.split()) if w}
 
 
 class MediaError(Exception):
@@ -49,35 +55,40 @@ def wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> list[str]:
     return lines + ([cur] if cur else [])
 
 
-def _draw_caption(img: Image.Image, text: str, index: int, total: int, font_path: str) -> None:
-    """Shared text layer for both a gradient card and a stock photo: safe-area headline + scene counter."""
+def _draw_caption(img: Image.Image, text: str, index: int, font_path: str, highlight: set[str] = frozenset()) -> None:
+    """Shared text layer for a gradient card and a stock photo: the spoken sentence, big, inside the safe area.
+    Words in `highlight` (the scene headline's words) are drawn in colour so the key words pop (kinetic captions)."""
     draw = ImageDraw.Draw(img)
     max_w, max_h = W - 2 * SAFE_X, H - SAFE_TOP - SAFE_BOTTOM
-    size = 104 if index == 0 else 88
+    size = 112 if index == 0 else 96
     while True:
         font = ImageFont.truetype(font_path, size)
         lines = wrap(draw, text, font, max_w)
-        line_h = int(size * 1.3)
+        line_h = int(size * 1.25)
         if len(lines) * line_h <= max_h or size <= 48:
             break
         size -= 6
     y = SAFE_TOP + (max_h - len(lines) * line_h) // 2
-    draw.rounded_rectangle([SAFE_X, y - 50, SAFE_X + 140, y - 36], radius=7, fill=(255, 196, 60))
+    draw.rounded_rectangle([SAFE_X, y - 50, SAFE_X + 140, y - 36], radius=7, fill=HIGHLIGHT)
+    space = draw.textlength(" ", font=font)
     for line in lines:
-        draw.text((SAFE_X, y), line, font=font, fill=(255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0))
+        x = SAFE_X
+        for word in line.split():
+            fill = HIGHLIGHT if plain_words(word) & highlight else (255, 255, 255)
+            draw.text((x, y), word, font=font, fill=fill, stroke_width=4, stroke_fill=(0, 0, 0))
+            x += draw.textlength(word, font=font) + space
         y += line_h
-    draw.text((SAFE_X, H - SAFE_BOTTOM + 40), f"{index + 1}/{total}", font=ImageFont.truetype(font_path, 36), fill=(220, 220, 230), stroke_width=2, stroke_fill=(0, 0, 0))
 
 
-def render_card(text: str, index: int, total: int, font_path: str, out: Path) -> None:
+def render_card(text: str, index: int, font_path: str, out: Path, highlight: set[str] = frozenset()) -> None:
     top, bottom = PALETTES[index % len(PALETTES)]
     grad = Image.linear_gradient("L").resize((W, H))
     img = Image.composite(Image.new("RGB", (W, H), bottom), Image.new("RGB", (W, H), top), grad)
-    _draw_caption(img, text, index, total, font_path)
+    _draw_caption(img, text, index, font_path, highlight)
     img.save(out)
 
 
-def render_photo_card(photo_path: Path, text: str, index: int, total: int, font_path: str, out: Path) -> None:
+def render_photo_card(photo_path: Path, text: str, index: int, font_path: str, out: Path, highlight: set[str] = frozenset()) -> None:
     """A stock photo cropped to 9:16, darkened under the safe area for legibility, with the same caption as a card."""
     img = ImageOps.exif_transpose(Image.open(photo_path)).convert("RGB")
     img = ImageOps.fit(img, (W, H), method=Image.LANCZOS)
@@ -85,7 +96,7 @@ def render_photo_card(photo_path: Path, text: str, index: int, total: int, font_
     for y in range(H):
         shade.putpixel((0, y), int(150 * max(0, (y - (SAFE_TOP - 80)) / (H - SAFE_TOP + 80))))
     img = Image.composite(Image.new("RGB", (W, H), (0, 0, 0)), img, shade.resize((W, H)))
-    _draw_caption(img, text, index, total, font_path)
+    _draw_caption(img, text, index, font_path, highlight)
     img.save(out)
 
 
@@ -98,8 +109,10 @@ def concat_audio(ffmpeg: str, parts: list[Path], out: Path) -> None:
     run(args)
 
 
-ZOOM_MAX = 1.25  # Ken Burns: total zoom ratio reached by the end of a clip, regardless of its length
 FPS = 30
+# each card lands with a quick zoom-out "punch" (PUNCH_FRAMES frames), then drifts in slowly up to ZOOM_MAX
+PUNCH_FRAMES, PUNCH_ZOOM, DRIFT_PER_FRAME, ZOOM_MAX = 8, 1.10, 0.0006, 1.25
+MUSIC_GAIN_DB = -17  # music under a -14 LUFS voice: present, never competing
 
 
 SUB_SCRIPT_H = 288  # libass default script height for SRT; MarginV and FontSize below are in these units, not pixels
@@ -122,12 +135,13 @@ def subtitle_filter(srt: Path, font_path: str, workdir: Path) -> str:
 
 
 def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path,
-                 srt: Path | None = None, font_path: str | None = None) -> list[str]:
-    """Each still gets a slow Ken Burns zoom (alternating in/out by scene index) before concatenation.
+                 srt: Path | None = None, font_path: str | None = None, music: Path | None = None) -> list[str]:
+    """Each still lands with a punch zoom and then drifts in slowly, before concatenation.
     Each still is a single-frame input and zoompan's d= turns that one frame into exactly d output frames, which
     ends the clip. (A looped input made every clip endless, so concat never left scene 1: the first real video showed
     scene 1's card for its whole length while a duration-only test passed.)
-    With srt and font_path the subtitles are burned into the picture (a platform-independent hard caption)."""
+    With srt and font_path the subtitles are burned into the picture (a platform-independent hard caption).
+    With music, the track loops under the voice at MUSIC_GAIN_DB and fades out over the last two seconds."""
     # burn-in runs ffmpeg with another cwd, so every path must be absolute (STORAGE_DIR defaults to ./storage)
     cards, audio, out = [c.resolve() for c in cards], audio.resolve(), out.resolve()
     srt = srt.resolve() if srt else None
@@ -139,15 +153,22 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
     parts = []
     for i, d in enumerate(durations):
         frames = max(1, round(d * FPS))
-        step = (ZOOM_MAX - 1) / frames
-        z = f"min(zoom+{step:.6f},{ZOOM_MAX})" if i % 2 == 0 else f"if(eq(on,0),{ZOOM_MAX},max(zoom-{step:.6f},1.0))"
+        z = (f"if(lt(on,{PUNCH_FRAMES}),{PUNCH_ZOOM}-{(PUNCH_ZOOM - 1) / PUNCH_FRAMES:.5f}*on,"
+             f"min(1+{DRIFT_PER_FRAME}*(on-{PUNCH_FRAMES}),{ZOOM_MAX}))")
         parts.append(f"[{i}:v]scale={W * 2}:{H * 2},zoompan=z='{z}':d={frames}:s={W}x{H}:fps={FPS}[v{i}]")
     labels = "".join(f"[v{i}]" for i in range(n))
     burn = f",{subtitle_filter(srt, font_path, out.parent)}" if srt else ""
     parts.append(f"{labels}concat=n={n}:v=1:a=0{burn},format=yuv420p[v]")
+    amap = f"{n}:a"
+    if music:
+        cmd += ["-stream_loop", "-1", "-i", str(music.resolve())]
+        fade_at = max(sum(durations) - 2, 0)
+        parts.append(f"[{n + 1}:a]volume={MUSIC_GAIN_DB}dB,afade=t=out:st={fade_at:.2f}:d=2[m];"
+                     f"[{n}:a][m]amix=inputs=2:duration=first:normalize=0[a]")
+        amap = "[a]"
     cmd += [
         "-filter_complex", ";".join(parts),
-        "-map", "[v]", "-map", f"{n}:a",
+        "-map", "[v]", "-map", amap,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", str(FPS),
         "-c:a", "aac", "-b:a", "160k",
         "-shortest",  # frames are rounded per scene (+-1/30 s each); never let a rounding tail outlive the voice

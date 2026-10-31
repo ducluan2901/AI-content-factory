@@ -1,4 +1,9 @@
 """Trend Radar and Content Planner: formats, the TrendScore formula, and idea -> job creation (plan §7.3-7.4)."""
+import math
+import re
+import xml.etree.ElementTree as ET
+
+import httpx
 from sqlalchemy.orm import Session
 
 from app.db import SCORE_COMPONENTS, Channel, ContentIdea, ContentJob, Trend
@@ -37,6 +42,29 @@ def trend_score(components: dict[str, float | None]) -> dict:
 def rescore(trend: Trend) -> None:
     r = trend_score({c: getattr(trend, c) for c in SCORE_COMPONENTS})
     trend.trend_score, trend.confidence, trend.is_estimated = r["score"], r["confidence"], r["is_estimated"]
+
+
+GOOGLE_TRENDS_RSS = "https://trends.google.com/trending/rss?geo={geo}"
+
+
+def parse_google_trends(xml_text: str) -> list[dict]:
+    """Google's Daily Search Trends RSS -> trend rows. approx_traffic ("200+", "20.000+") becomes velocity on a log
+    scale (1K -> 60, 20K -> 86, 100K+ -> 100); the other components stay unknown, so the row is marked estimated."""
+    rows = []
+    for item in ET.fromstring(xml_text).iter("item"):
+        def text(tag):  # the ht: namespace varies by region; match on the local tag name
+            return next((e.text or "" for e in item.iter() if e.tag.split("}")[-1] == tag), "").strip()
+        n = int(re.sub(r"\D", "", text("approx_traffic")) or 0)
+        rows.append({"title": text("title"), "summary": text("news_item_title") or None, "source": "google_trends",
+                     "source_url": text("news_item_url") or None, "velocity": round(min(100.0, 20 * math.log10(n)), 1) if n >= 10 else None})
+    return rows
+
+
+def fetch_google_trends(geo: str) -> list[dict]:
+    try:
+        return parse_google_trends(httpx.get(GOOGLE_TRENDS_RSS.format(geo=geo), timeout=20).raise_for_status().text)
+    except (httpx.HTTPError, ET.ParseError) as e:
+        raise ValueError(f"Google Trends not readable: {e}") from e
 
 
 def job_from_idea(db: Session, idea: ContentIdea, profile: str) -> ContentJob:

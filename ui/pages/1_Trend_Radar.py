@@ -13,6 +13,9 @@ formats = api("GET", "/formats").json()
 st.title("Trend Radar")
 
 with st.sidebar:
+    if st.button("Import today's Google Trends (VN)"):
+        if r := api("POST", "/trends/import/google", params={"geo": "VN"}):
+            st.success(f"{r.json()['added']} new of {r.json()['fetched']} fetched. Score and pick a format before planning.")
     st.subheader("Add a trend")
     with st.form("trend"):
         title = st.text_input("Title")
