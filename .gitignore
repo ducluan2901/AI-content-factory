@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 
+# Your own stock images (STOCK_PROVIDER=local): licensing is yours, they stay out of the repo
+assets/
+
 # Generated media and database
 storage/
 *.db

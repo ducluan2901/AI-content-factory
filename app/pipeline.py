@@ -203,7 +203,7 @@ async def stage_visuals(ctx: dict) -> dict:
             assets.append({"kind": "stock_image", "scene_index": i, "order_index": i, "path": rel(s, p), "width": media.W, "height": media.H,
                            "source_provider": stock.name, "source_url": photo.source_url, "source_id": photo.source_id,
                            "author": photo.author, "licence": stock.licence, "licence_url": stock.licence_url,
-                           "attribution_required": False, "attribution_text": f"Photo by {photo.author} on Pexels", "font": Path(s.font_path).name})
+                           "attribution_required": False, "attribution_text": stock.attribution(photo), "font": Path(s.font_path).name})
             stock_hits += 1
         else:
             await asyncio.to_thread(media.render_card, sc["on_screen_text"], i, len(scenes), s.font_path, p)

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import subprocess
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -229,6 +230,10 @@ class PexelsProvider:
     licence = "pexels"
     licence_url = "https://www.pexels.com/license/"
 
+    @staticmethod
+    def attribution(photo: "StockPhoto") -> str:
+        return f"Photo by {photo.author} on Pexels"
+
     def __init__(self, api_key: str, cache_dir: Path, client: httpx.AsyncClient | None = None):
         self.api_key, self.cache_dir = api_key, cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -262,6 +267,10 @@ class FixtureStock:
     licence = "pexels"  # stands in for a real stock licence so quality-gate tests exercise that path too
     licence_url = "https://www.pexels.com/license/"
 
+    @staticmethod
+    def attribution(photo: "StockPhoto") -> str:
+        return f"Photo by {photo.author} (fixture)"
+
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -275,9 +284,47 @@ class FixtureStock:
         return StockPhoto(path, "fixture", "https://example.com/fixture-photo", "Fixture Photographer")
 
 
+def _tokens(text: str) -> set[str]:
+    """Lower-case words of 3+ letters with Vietnamese diacritics removed, so 'mèo' matches 'meo'."""
+    plain = unicodedata.normalize("NFKD", text.lower().replace("đ", "d")).encode("ascii", "ignore").decode()
+    return {w for w in re.split(r"[^a-z0-9]+", plain) if len(w) >= 3}
+
+
+class LocalStock:
+    """Your own images in one folder, picked by file name: 'cat-kitchen-night.jpg' matches the query
+    'cat in a kitchen at night'. The best match wins, ties go to the first file name; no match returns None and
+    the scene gets a title card, never a random unrelated photo. Every file is recorded as licence 'owned', which is
+    your statement that you have the right to use it: only put images there that you own or are licensed to use."""
+
+    name = "local"
+    licence = "owned"
+    licence_url = None
+    EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+    def __init__(self, folder: Path):
+        self.folder = folder
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def attribution(photo: "StockPhoto") -> str | None:
+        return None
+
+    async def search_photo(self, query: str) -> StockPhoto | None:
+        want = _tokens(query)
+        best, best_score = None, 0
+        for f in sorted(self.folder.iterdir(), key=lambda p: p.name.lower()):
+            if f.suffix.lower() in self.EXTENSIONS and f.is_file() and (score := len(want & _tokens(f.stem))) > best_score:
+                best, best_score = f, score
+        if best is None:
+            return None
+        return StockPhoto(best, best.name, best.resolve().as_uri(), "owner")
+
+
 def build_stock(s: Settings):
     if s.stock_provider == "none":
         return None
+    if s.stock_provider == "local":
+        return LocalStock(s.local_stock_dir)
     if s.stock_provider == "fixture":
         return FixtureStock(s.storage_dir / "stock_cache")
     if s.stock_provider == "pexels":

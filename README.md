@@ -156,7 +156,15 @@ would carry. No match, no key configured, or a Pexels error all fall back to a t
 never shipped with an unrecorded licence (BACKLOG R4). Every asset records its licence; stock photos carry
 `licence: pexels`, `source_url`, `source_id` and `author`, same as a card's `licence: generated`.
 
-Set `PEXELS_API_KEY` in `.env` to turn this on (a free account at pexels.com/api - create it yourself, this
+**No Pexels key? Use your own images.** Pexels has paused new API keys, so there is a second source that needs
+no key or account: set `STOCK_PROVIDER=local` and drop images into `assets/stock` (`LOCAL_STOCK_DIR`). Name
+each file with the words that describe it, in English or Vietnamese, with or without diacritics:
+`cat-kitchen-night.jpg`, `meo-dua-chuot.png`. A scene takes the file sharing the most words with its
+`visual_query`; with no word in common it gets a title card, never a random photo. Files are recorded as
+licence `owned`, which is your statement that you own them or are licensed to use them, so put only such images
+there. The folder is git-ignored. Supported types: jpg, jpeg, png, webp.
+
+Set `PEXELS_API_KEY` in `.env` to turn the Pexels source on (a free account at pexels.com/api - create it yourself, this
 app never creates accounts). With no key, `STOCK_PROVIDER=pexels` quietly behaves like `STOCK_PROVIDER=none`
 and every scene is a card, exactly like before this sprint.
 

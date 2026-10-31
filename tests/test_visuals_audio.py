@@ -263,3 +263,49 @@ def test_burn_in_works_with_a_relative_storage_dir(tmp_path, monkeypatch):
         d = run_to_rest(c, job_id)
         assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
         assert d["outputs"]["RENDER"]["subtitles_burned"] is True
+
+
+# ---------------------------------------------------------------- local image folder (no key, no account)
+
+
+def test_local_stock_matches_by_file_name_and_never_guesses(tmp_path):
+    import asyncio
+    from app.providers import LocalStock
+    for name in ("cat-kitchen-night.jpg", "meo_dua_chuot.png", "office-laptop.webp", "notes.txt", "dog.gif"):
+        (tmp_path / name).write_bytes(b"x")
+    stock = LocalStock(tmp_path)
+    pick = lambda q: (lambda r: r.path.name if r else None)(asyncio.run(stock.search_photo(q)))  # noqa: E731
+    assert pick("cat in a kitchen at night") == "cat-kitchen-night.jpg"  # most words in common wins
+    assert pick("Mèo sợ dưa chuột") == "meo_dua_chuot.png"  # Vietnamese diacritics are ignored on both sides
+    assert pick("person typing laptop office") == "office-laptop.webp"
+    assert pick("airplane over the ocean") is None  # nothing in common: a card, never an unrelated photo
+    assert pick("cat") == "cat-kitchen-night.jpg"  # one shared word is enough
+    assert pick("dog") is None  # .gif and .txt are not image types the renderer takes
+
+
+def test_build_stock_local_creates_its_folder(tmp_path):
+    from app.providers import LocalStock
+    folder = tmp_path / "my" / "images"
+    stock = build_stock(settings(tmp_path, stock_provider="local", local_stock_dir=folder))
+    assert isinstance(stock, LocalStock) and folder.is_dir()
+
+
+@needs_ffmpeg
+def test_local_photos_mix_with_cards_and_are_recorded_as_owned(tmp_path):
+    from app.providers import LocalStock
+    folder = tmp_path / "stock"
+    folder.mkdir()
+    Image.new("RGB", (900, 1400), (120, 60, 30)).save(folder / "chatbot-agent-hanh-dong.jpg")
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path), stock=LocalStock(folder))
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+        assets = d["outputs"]["VISUALS"]["assets"]
+        photos = [a for a in assets if a["kind"] == "stock_image"]
+        cards = [a for a in assets if a["kind"] == "title_card"]
+        assert photos and cards and d["outputs"]["VISUALS"]["stock_hits"] == len(photos)
+        for a in photos:
+            assert a["licence"] == "owned" and a["source_provider"] == "local" and a["attribution_text"] is None and a["source_url"].startswith("file:")
+        assert all(a["licence"] == "generated" for a in cards)
