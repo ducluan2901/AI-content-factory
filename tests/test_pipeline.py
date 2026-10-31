@@ -124,3 +124,53 @@ def test_subtitle_cues_never_overlap():
     cues = media.build_cues(segs)
     assert all(a["end_ms"] <= b["start_ms"] for a, b in zip(cues, cues[1:]))
     assert all(len(l) <= 32 for c in cues for l in c["lines"])
+
+
+class _FakeMessages:
+    def __init__(self, resp=None, exc=None):
+        self.resp, self.exc, self.kwargs = resp, exc, None
+
+    async def create(self, **kw):
+        self.kwargs = kw
+        if self.exc:
+            raise self.exc
+        return self.resp
+
+
+class _FakeClient:
+    def __init__(self, messages):
+        self.beta = type("B", (), {"messages": messages})()
+
+    def with_options(self, **_):
+        return self
+
+
+def _resp(stop="end_turn", model="claude-sonnet-5-5"):
+    from types import SimpleNamespace as NS
+    return NS(stop_reason=stop, stop_details=NS(category="cyber") if stop == "refusal" else None, model=model,
+              content=[NS(type="thinking", thinking=""), NS(type="text", text='{"ok": 1}')], usage=NS(input_tokens=18000, output_tokens=6000))
+
+
+def test_anthropic_provider_costs_and_text():
+    import asyncio
+    from app.providers import AnthropicApiProvider
+    msgs = _FakeMessages(_resp())
+    r = asyncio.run(AnthropicApiProvider("claude-sonnet-5-5", client=_FakeClient(msgs)).complete("hi"))
+    assert r.text == '{"ok": 1}' and r.model == "claude-sonnet-5-5"
+    assert r.cost_usd == pytest.approx((18000 * 2 + 6000 * 10) / 1e6)
+    assert msgs.kwargs["model"] == "claude-sonnet-5-5" and msgs.kwargs["fallbacks"] == "default"
+
+
+def test_anthropic_provider_refusal_is_not_retried():
+    import asyncio
+    from app.pipeline import RETRYABLE
+    from app.providers import AnthropicApiProvider, ProviderRejected
+    with pytest.raises(ProviderRejected) as e:
+        asyncio.run(AnthropicApiProvider("claude-sonnet-5-5", client=_FakeClient(_FakeMessages(_resp("refusal")))).complete("hi"))
+    assert not isinstance(e.value, RETRYABLE)
+
+
+def test_anthropic_provider_needs_a_key():
+    from app.providers import build_llm
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        build_llm(Settings(_env_file=None, llm_provider="anthropic_api", anthropic_api_key=""))

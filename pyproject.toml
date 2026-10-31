@@ -12,6 +12,7 @@ dependencies = [
   "pillow",
   "streamlit",
   "httpx",
+  "anthropic>=2.3",
   "python-multipart",
 ]
 

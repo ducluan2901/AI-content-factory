@@ -71,7 +71,9 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
         def which(p):
             return shutil.which(p) or (p if Path(p).is_file() else None)
         checks = {"ffmpeg": which(s.ffmpeg_path), "ffprobe": which(s.ffprobe_path), "font": s.font_path if Path(s.font_path).is_file() else None,
-                  "claude_cli": which(s.claude_cli_path) if s.llm_provider == "claude_cli" else "n/a"}
+                  "claude_cli": which(s.claude_cli_path) if s.llm_provider == "claude_cli" else "n/a",
+                  # presence only: the key value never leaves the process
+                  "anthropic_api_key": bool(s.anthropic_api_key and s.anthropic_api_key.get_secret_value()) if s.llm_provider == "anthropic_api" else "n/a"}
         return {"ok": all(checks.values()), "app_env": s.app_env, "llm_provider": s.llm_provider, "tts_provider": s.tts_provider, "checks": checks, "queue": queue.qsize()}
 
     @app.post("/jobs", status_code=201)

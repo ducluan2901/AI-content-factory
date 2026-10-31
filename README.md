@@ -26,7 +26,7 @@ approval actually live.
 2. The five open questions — PRD.md §10.
 3. The minimum viable workflow and the 4-week plan — BACKLOG.md Part E.
 
-The week-1 skeleton is built on the defaults these documents recommend: `dev` providers, title cards, a free Edge voice, and export to disk. Weeks 2 to 4 still wait on these answers.
+The week-1 skeleton is built on these defaults: the Anthropic API for the script, title cards, a free Edge voice, and export to disk. Weeks 2 to 4 still wait on these answers.
 
 ---
 
@@ -43,11 +43,9 @@ It creates `.venv`, installs the dependencies, finds FFmpeg, and writes `.env` f
 `.env.example` with the absolute FFmpeg paths. Windows PowerShell 5.1 has no `&&`; use `;` or
 separate lines.
 
-Log the Claude CLI in once, in your own terminal, so the `dev` LLM provider can call it:
-
-```bash
-claude -p "hello"
-```
+Put an Anthropic API key in `.env` as `ANTHROPIC_API_KEY`. The script stage calls
+`claude-sonnet-5-5` through the API, which costs about $0.025 per video. Set a spend cap on the
+key in the Anthropic Console. `/health` reports whether a key is configured, never its value.
 
 Run the API and the operator console in two terminals:
 
@@ -62,7 +60,7 @@ Run the API and the operator console in two terminals:
 API docs at <http://127.0.0.1:8000/docs>, operator console at <http://127.0.0.1:8501>. Both
 bind to localhost only, because the MVP has no authentication.
 
-To try the pipeline without the Claude CLI, set `LLM_PROVIDER=fixture` in `.env`. It replays a
+To try the pipeline without an API key, set `LLM_PROVIDER=fixture` in `.env`. It replays a
 recorded Vietnamese script from `tests/fixtures/llm/` and still uses the real voice and render.
 
 Run the tests (offline, about 10 seconds, needs FFmpeg):
@@ -100,7 +98,8 @@ Measured on this machine, 2026-10-31, demo topic, fixture script, real Vietnames
 | Marginal cost | $0 |
 
 Not built yet, per the backlog: research, separate strategy/script/SEO agents, stock footage,
-loudness normalisation, Alembic migrations, and the Anthropic API provider for `prod`.
+loudness normalisation, and Alembic migrations. The `claude_cli` provider remains for trying
+prompts during development only, and refuses to start with `APP_ENV=prod`.
 
 ## Security and content rules
 

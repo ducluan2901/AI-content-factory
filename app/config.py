@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -9,7 +10,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
 
     app_env: str = "dev"  # dev | prod | test
-    llm_provider: str = "claude_cli"  # claude_cli | fixture
+    llm_provider: str = "anthropic_api"  # anthropic_api | claude_cli (dev-only) | fixture
+    script_model: str = "claude-sonnet-5-5"  # founder decision: never downgrade the script stage
+    anthropic_api_key: SecretStr | None = None  # from .env or the environment; SDK never sees .env itself
     claude_cli_path: str = "claude"
     claude_model: str = ""
     tts_provider: str = "edge_tts"  # edge_tts | fixture

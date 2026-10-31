@@ -13,6 +13,10 @@ class ProviderError(Exception):
     """Transient or provider-side failure; the runner may retry it."""
 
 
+class ProviderRejected(Exception):
+    """Permanent failure (bad key, bad request, content refusal). Never retried: a human must act."""
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -37,8 +41,57 @@ def extract_json(text: str) -> dict:
     return json.loads(m.group(0))
 
 
+# USD per 1M tokens (input, output), first-party API rates. Used for stage_run.cost_usd (PRD S6).
+PRICES = {"claude-sonnet-5-5": (2.00, 10.00), "claude-haiku-5-5": (0.10, 0.50), "claude-opus-5-5": (4.00, 20.00)}
+
+
+class AnthropicApiProvider:
+    """Default generator: the Anthropic API, billed per call. Key from ANTHROPIC_API_KEY."""
+
+    name = "anthropic_api"
+
+    def __init__(self, model: str, api_key: str | None = None, client=None):
+        import anthropic
+
+        self._anthropic = anthropic
+        self.model = model
+        self.client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=3)
+
+    async def complete(self, prompt: str, timeout_s: int = 300) -> LLMResponse:
+        a = self._anthropic
+        try:
+            resp = await self.client.with_options(timeout=timeout_s).beta.messages.create(
+                model=self.model,
+                max_tokens=16000,
+                messages=[{"role": "user", "content": prompt}],
+                # on a safety decline the API re-runs the request on a fallback model it picks
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
+            )
+        except (a.RateLimitError, a.InternalServerError, a.APIConnectionError, a.APITimeoutError) as e:
+            raise ProviderError(f"anthropic API transient error: {e}") from e
+        except a.APIStatusError as e:  # 400/401/403/404: retrying cannot help
+            raise ProviderRejected(f"anthropic API {e.status_code}: {e.message}") from e
+        if resp.stop_reason == "refusal":
+            cat = resp.stop_details.category if resp.stop_details else None
+            raise ProviderRejected(f"model declined the request (category {cat})")
+        if resp.stop_reason == "max_tokens":
+            raise ProviderError("response hit max_tokens before finishing")
+        u = resp.usage
+        p_in, p_out = PRICES.get(resp.model, (0.0, 0.0))  # unknown fallback model: cost shows as 0, model is still recorded
+        return LLMResponse(
+            text="".join(b.text for b in resp.content if b.type == "text"),
+            provider=self.name,
+            model=resp.model,
+            cost_usd=(u.input_tokens * p_in + u.output_tokens * p_out) / 1e6,
+            tokens_in=u.input_tokens,
+            tokens_out=u.output_tokens,
+        )
+
+
 class ClaudeCliProvider:
-    """dev-only: headless `claude -p` on the founder's subscription (PRD §8). Concurrency 1."""
+    """dev-only: headless `claude -p` on the founder's subscription (PRD §8). Concurrency 1.
+    Only for trying prompts during development; it spends the founder's Max quota."""
 
     name = "claude_cli"
     _lock = asyncio.Lock()
@@ -141,6 +194,10 @@ class FixtureTTS:
 
 
 def build_llm(s: Settings):
+    if s.llm_provider == "anthropic_api":
+        if not s.anthropic_api_key:
+            raise RuntimeError("LLM_PROVIDER=anthropic_api needs ANTHROPIC_API_KEY in .env or the environment")
+        return AnthropicApiProvider(s.script_model, s.anthropic_api_key.get_secret_value())
     if s.llm_provider == "claude_cli":
         return ClaudeCliProvider(s)
     if s.llm_provider == "fixture":
