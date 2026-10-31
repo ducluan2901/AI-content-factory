@@ -1,0 +1,19 @@
+# One term per line, matched case-insensitively inside narration, on-screen text, title and caption.
+# A match is a warning at script review and in the quality gate, never an automatic block: a human decides.
+# Starter list: claims that platforms and consumer-protection rules treat as risky. Edit freely.
+cam kết 100%
+đảm bảo 100%
+chữa khỏi
+chữa được mọi
+giảm cân thần tốc
+kiếm tiền nhanh
+làm giàu nhanh
+đảm bảo lợi nhuận
+không cần vốn
+miễn phí 100%
+guaranteed results
+miracle cure
+cures cancer
+get rich quick
+make money fast
+risk-free

@@ -200,3 +200,66 @@ def test_visual_query_optional_falls_back_to_on_screen_text(tmp_path):
         run_to_rest(c, job_id)
     sc = json.loads((FIX / "script_vi.json").read_text(encoding="utf-8"))
     assert seen_queries == [scene["on_screen_text"] for scene in sc["scenes"]]  # the fixture has no visual_query field
+
+
+# ---------------------------------------------------------------- Sprint 4: subtitle burn-in and risky terms
+
+
+@needs_ffmpeg
+def test_burned_subtitles_change_the_picture_and_are_recorded(tmp_path):
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path))
+    frames = {}
+    with TestClient(app) as c:
+        for burn in (False, True):
+            job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "target_duration_s": 55, "burn_subtitles": burn}).json()["id"]
+            d = run_to_rest(c, job_id)
+            assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+            r = d["outputs"]["RENDER"]
+            assert r["subtitles_burned"] is burn
+            png = tmp_path / f"f{burn}.png"
+            subprocess.run([FFMPEG, "-y", "-v", "error", "-ss", "2", "-i", str(tmp_path / r["video_path"]), "-frames:v", "1", str(png)], check=True)
+            frames[burn] = Image.open(png).convert("RGB")
+    from PIL import ImageChops
+    box = ImageChops.difference(frames[False], frames[True]).getbbox()
+    assert box is not None and box[1] > 1000  # captions appear in the lower part, clear of the headline
+
+
+def test_risky_terms_found_case_insensitively_and_listed():
+    from app.pipeline import risky_terms
+    assert risky_terms(["Chữ thường", "Kiếm tiền NHANH với app này", "bình thường"]) == ["kiếm tiền nhanh"]
+    assert risky_terms(["một câu hoàn toàn bình thường"]) == []
+
+
+@needs_ffmpeg
+def test_safety_terms_warn_but_do_not_block(tmp_path):
+    risky = tmp_path / "risky.json"
+    data = json.loads((FIX / "script_vi.json").read_text(encoding="utf-8"))
+    data["caption"] = "Cam kết 100% hiệu quả, kiếm tiền nhanh cho mọi người."
+    risky.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(risky), tts=FixtureTTS(s.ffmpeg_path))
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+        review = {x["rule"]: x for x in d["outputs"]["SCRIPT"]["checks"]}
+        assert review["safety_terms"]["passed"] is False and "kiếm tiền nhanh" in review["safety_terms"]["actual"]
+        c.post(f"/jobs/{job_id}/script/approve", json={"approved_by": "founder"})
+        d = run_to_rest(c, job_id)
+        gate = {x["rule"]: x for x in d["outputs"]["QUALITY"]["checks"]}
+        assert gate["safety_terms"]["passed"] is False and gate["safety_terms"]["severity"] == "warning"
+        assert d["job"]["status"] == "AWAITING_APPROVAL"  # a human decides, nothing is blocked
+
+
+@needs_ffmpeg
+def test_burn_in_works_with_a_relative_storage_dir(tmp_path, monkeypatch):
+    """The real default is STORAGE_DIR=./storage; burn-in changes ffmpeg's cwd, so relative paths must not leak through."""
+    monkeypatch.chdir(tmp_path)
+    s = Settings(_env_file=None, app_env="test", llm_provider="fixture", tts_provider="fixture", ffmpeg_path=FFMPEG, ffprobe_path=FFPROBE,
+                 storage_dir=Path("storage"), database_url=f"sqlite:///{(tmp_path / 't.db').as_posix()}")
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(FFMPEG))
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "target_duration_s": 55, "burn_subtitles": True}).json()["id"]
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+        assert d["outputs"]["RENDER"]["subtitles_burned"] is True

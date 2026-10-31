@@ -169,6 +169,20 @@ approval, since the measured figure is only as good as that single pass.
 Not done this sprint: hardcoded subtitle burn-in (`render_output.subtitles_burned` stays `False`); the
 `SubtitleBuilder`'s SRT/VTT files are still the only subtitle output.
 
+## Sprint 4: subtitle burn-in, risky-claim check, Video Studio
+
+`POST /jobs` takes `"burn_subtitles": true` to hard-code the captions into the picture (SRT and VTT are
+exported either way). The captions use the configured font, sit above the platform UI, and carry Vietnamese
+diacritics. Burn-in copies the SRT and the font next to the render and refers to them by relative name,
+because libass mishandles Windows drive-letter paths.
+
+`app/safety_terms.txt` is a starter list of risky-claim phrases ("cam kết 100%", "kiếm tiền nhanh",
+"guaranteed results", ...). A match is a warning at script review and in the quality gate, never a block:
+a person decides. Edit the file freely.
+
+The Home page doubles as the Video Studio: before you approve it shows every quality check with a
+BLOCK / review / ok marker, a thumbnail per scene with its licence and attribution, and the subtitle file.
+
 ## Security and content rules
 
 - Secrets only in environment variables; `.env` is git-ignored and never committed.
