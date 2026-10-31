@@ -231,7 +231,7 @@ the approval wall and the risk list stay; the niche, the video length and the or
 | Plan sprint | Days | Covers | Relation to Parts A–B |
 |---|---|---|---|
 | 1 | 1–3 | channels, Trend Radar, Content Planner, TrendScore, dashboards 1–2 | new; **done** on branch `sprint-1-trend-planner` |
-| 2 | 4–7 | Script agent per format, prompt templates | replaces W2 2.3–2.4; research (W2 2.1–2.2) only for the `facts` format |
+| 2 | 4–7 | Script agent per format, prompt templates | **done** on branch `sprint-2-script-agent`: script gate, edit, regenerate with notes, per-format prompts with versions, batch jobs. Research for `facts` still open |
 | 3 | 8–12 | TTS, image, video renderer | W1 spine exists; adds an image provider decision (PRD Q2) |
 | 4 | 13–17 | QC, subtitles, Video Studio | W3 3.3–3.6 |
 | 5 | 18–23 | publishing, analytics | **manual** upload and manual metric entry; platform APIs need app review (D.3) |

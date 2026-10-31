@@ -111,3 +111,11 @@ def test_migrate_fresh_db_and_stamp_legacy_db(tmp_path):
     assert migrate(legacy) == head
     with create_engine(legacy).connect() as c:
         assert c.execute(text("select version_num from alembic_version")).scalar() == head
+
+
+def test_files_endpoint_stays_inside_storage(client, tmp_path):
+    (tmp_path / "ok.txt").write_text("fine", encoding="utf-8")
+    (tmp_path.parent / "secret.env").write_text("ANTHROPIC_API_KEY=x", encoding="utf-8")
+    assert client.get("/files/ok.txt").text == "fine"
+    assert client.get("/files/..%2Fsecret.env").status_code == 404
+    assert client.get(f"/files/{(tmp_path.parent / 'secret.env').as_posix()}").status_code == 404

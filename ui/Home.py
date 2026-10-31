@@ -66,6 +66,33 @@ with c1:
         st.caption(f"{out['RENDER']['width']}x{out['RENDER']['height']} · {out['RENDER']['duration_s']}s · {out['RENDER']['video_codec']}/{out['RENDER']['audio_codec']}")
 
 with c2:
+    if job["status"] == "SCRIPT_REVIEW" and "SCRIPT" in out:
+        sc = out["SCRIPT"]
+        st.subheader("Script review")
+        st.caption("Nothing is voiced or rendered until the script is approved. Approving continues the job from the voice stage.")
+        for ch in sc.get("checks", []):
+            (st.success if ch["passed"] else st.warning)(f"{ch['rule']}: {ch['message']} (expected {ch['expected']}, got {ch['actual']})")
+        with st.form("script_edit"):
+            title = st.text_input("Title", sc["title"])
+            caption = st.text_area("Caption", sc["caption"], height=70)
+            tags = st.text_input("Hashtags (space separated)", " ".join(sc["hashtags"]))
+            scenes = st.data_editor(sc["scenes"], num_rows="dynamic", use_container_width=True, key=f"scenes_{job_id}_{sc.get('version')}")
+            editor = st.text_input("Your name", key="script_by")
+            if st.form_submit_button("Save my edits") and editor:
+                body = {"edited_by": editor, "script": {"title": title, "caption": caption, "hashtags": tags.split(),
+                                                         "scenes": [x for x in scenes if x.get("narration")]}}
+                if api("PUT", f"/jobs/{job_id}/script", json=body):
+                    st.success("Saved as a new script version")
+                    st.rerun()
+        name = st.text_input("Reviewer name", key="script_reviewer")
+        notes = st.text_area("Feedback for regeneration (what to change)", key="script_notes")
+        a, b = st.columns(2)
+        if a.button("Approve script", type="primary", disabled=not name):
+            if api("POST", f"/jobs/{job_id}/script/approve", json={"approved_by": name}):
+                st.success("Approved; voice and render are running")
+        if b.button("Regenerate with feedback", disabled=not (name and len(notes.strip()) >= 3)):
+            if api("POST", f"/jobs/{job_id}/script/regenerate", json={"requested_by": name, "notes": notes}):
+                st.info("Regenerating; refresh in a moment")
     if job["status"] == "AWAITING_APPROVAL":
         st.subheader("Approval")
         warns = [c for c in out["QUALITY"]["checks"] if not c["passed"]]
