@@ -64,9 +64,9 @@ def rel(s: Settings, p: Path) -> str:
     return p.resolve().relative_to(s.storage_dir.resolve()).as_posix()
 
 
-def load_prompt(name: str) -> tuple[str, str]:
+def load_prompt(name: str, folder: Path = ROOT / "app" / "prompts") -> tuple[str, str]:
     """Template text and its version tag (name@sha8), so every stage_run records exactly which prompt ran."""
-    text = (ROOT / "app" / "prompts" / f"{name}.md").read_text(encoding="utf-8")
+    text = (folder / f"{name}.md").read_text(encoding="utf-8")
     return text, f"{name}@{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 
@@ -147,8 +147,8 @@ def finish_script(script: ScriptOut, job: ContentJob, job_dir: Path, version: in
 async def stage_script(ctx: dict) -> dict:
     s, job = ctx["settings"], ctx["job"]
     rate = SYLLABLES_PER_S[job.language]
-    template, v_main = load_prompt("script")
-    guide, v_fmt = load_prompt(f"format_{job.format if job.format in FORMATS else 'facts'}")
+    template, v_main = load_prompt("script", s.prompt_dir)
+    guide, v_fmt = load_prompt(f"format_{job.format if job.format in FORMATS else 'facts'}", s.prompt_dir)
     min_scenes, max_scenes = scene_range(job)
     prompt = template.format(
         topic=job.input_topic,
