@@ -130,6 +130,10 @@ class ContentJob(Base):
     status: Mapped[str] = mapped_column(default="QUEUED")
     current_stage: Mapped[str | None]
     profile: Mapped[str] = mapped_column(default="dev")
+    # script gate (plan §7.5 SCRIPT_GENERATED -> SCRIPT_APPROVED): pause after SCRIPT until a human approves it
+    review_script: Mapped[bool] = mapped_column(default=True)
+    script_approved_at: Mapped[str | None]
+    operator_notes: Mapped[str | None]  # feedback fed into the next script generation
     # shortcut: plain text, not an FK, to avoid the job<->approval FK cycle SQLite cannot create; add when moving to Postgres
     approval_id: Mapped[str | None]
     error_summary: Mapped[str | None]
@@ -156,6 +160,7 @@ class StageRun(Base):
     output_json: Mapped[str | None]
     provider: Mapped[str | None]
     model: Mapped[str | None]
+    prompt_version: Mapped[str | None]  # template name@sha8 for each template the call used (DATABASE.md §4.15, inlined)
     tokens_in: Mapped[int | None]
     tokens_out: Mapped[int | None]
     cost_usd: Mapped[float] = mapped_column(default=0.0)
@@ -172,7 +177,7 @@ class Approval(Base):
     __tablename__ = "approval"
     id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("apr"))
     job_id: Mapped[str] = mapped_column(ForeignKey("content_job.id", ondelete="CASCADE"))
-    decision: Mapped[str]  # approved | rejected
+    decision: Mapped[str]  # approved | rejected (final video) · script_approved | script_rejected (script gate)
     approved_by: Mapped[str]  # NOT NULL: an approval always has a name attached
     notes: Mapped[str | None]
     created_at: Mapped[str] = mapped_column(default=now)

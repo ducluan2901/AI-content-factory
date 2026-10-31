@@ -73,6 +73,11 @@ if ideas:
     st.dataframe([{"id": i["id"], "status": i["status"], "format": i["format"], "channel": name_of.get(i["channel_id"], "?"), "title": i["title"],
                    "len s": i["target_duration_s"], "viral": i["viral_score"], "revenue": i["revenue_score"], "trend": i["trend_id"], "sample": i["is_sample"]} for i in ideas],
                  hide_index=True, use_container_width=True)
+    picks = st.multiselect("Batch: queue several ideas as jobs (they stop at script review)", [i["id"] for i in ideas if i["status"] != "dropped"],
+                           format_func=lambda x: next(i["title"] for i in ideas if i["id"] == x), max_selections=20)
+    if st.button("Create jobs for selected ideas", disabled=not picks):
+        if r := api("POST", "/ideas/batch-jobs", json={"idea_ids": picks}):
+            st.success(f"{len(r.json())} jobs queued; review their scripts on the Home page")
     sel = st.selectbox("Edit idea", [i["id"] for i in ideas], format_func=lambda x: next(i["title"] for i in ideas if i["id"] == x))
     idea = next(i for i in ideas if i["id"] == sel)
     e1, e2 = st.columns([2, 1])

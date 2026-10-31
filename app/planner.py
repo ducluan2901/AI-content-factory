@@ -3,26 +3,11 @@ from sqlalchemy.orm import Session
 
 from app.db import SCORE_COMPONENTS, Channel, ContentIdea, ContentJob, Trend
 
-# code -> (Vietnamese label, duration window in s, guidance for the script prompt)
+# code -> (Vietnamese label, duration window in s). The script guidance per format lives in app/prompts/format_<code>.md
 FORMATS = {
-    "comedy": {
-        "label": "Hài tình huống / relatable",
-        "window": (20, 35),
-        "guide": "Format: situational comedy. One relatable everyday situation, an escalation, and a punchline in the last scene. "
-                 "The humour comes from recognition, not from mocking people. A product may appear naturally in the scene but is never pitched.",
-    },
-    "facts": {
-        "label": "Chuyện lạ / bí ẩn / sự thật thú vị",
-        "window": (30, 45),
-        "guide": "Format: curiosity story. Open with the strange detail, build the mystery scene by scene, and end with the payoff. "
-                 "State only facts you are confident are true; if something is disputed, say so. No invented numbers, names or dates.",
-    },
-    "gadget": {
-        "label": "Sản phẩm độc lạ / gadget",
-        "window": (25, 40),
-        "guide": "Format: product discovery. Show the problem, show what the product does, show the result. "
-                 "Use only the product facts you are given; never invent specs, prices, certifications or reviews. End with a soft call to check the link.",
-    },
+    "comedy": {"label": "Hài tình huống / relatable", "window": (20, 35)},
+    "facts": {"label": "Chuyện lạ / bí ẩn / sự thật thú vị", "window": (30, 45)},
+    "gadget": {"label": "Sản phẩm độc lạ / gadget", "window": (25, 40)},
 }
 
 WEIGHTS = {"velocity": 0.30, "retention_potential": 0.25, "channel_fit": 0.20, "monetization_potential": 0.15, "production_feasibility": 0.10}

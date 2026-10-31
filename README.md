@@ -128,6 +128,25 @@ TrendScore is `0.30 velocity + 0.25 retention + 0.20 channel fit + 0.15 monetiza
 each 0–100. A component you leave empty counts as 50 and lowers `confidence`, and the trend is marked
 `is_estimated`. Nothing scores a trend automatically: there is no scraping and no LLM call in this sprint.
 
+## Sprint 2: script gate and format prompts
+
+Every job now stops at `SCRIPT_REVIEW` after the script is written, before any voice or render time is
+spent (plan §7.5, `SCRIPT_GENERATED → SCRIPT_APPROVED`). Pass `"review_script": false` to `POST /jobs` to skip
+the stop.
+
+| Endpoint | Purpose |
+|---|---|
+| `PUT /jobs/{id}/script` | save a human edit as a new script version; later stages are superseded |
+| `POST /jobs/{id}/script/approve` | approve the script; the job continues from the voice stage |
+| `POST /jobs/{id}/script/regenerate` | reject with notes; the next draft sees the notes and the previous draft |
+| `POST /ideas/batch-jobs` | queue up to 20 ideas at once; each stops at script review |
+
+The script prompt is `app/prompts/script.md` plus one of `format_comedy.md`, `format_facts.md`,
+`format_gadget.md`. Each run records `prompt_version` as `name@sha8` for both files, so a change in output
+can be traced to the prompt that produced it. The script review screen shows advisory checks: estimated
+length against the target, scene count, hook length, card text length, platform limits, missing product
+facts for gadgets, and any figure in the narration that needs verifying.
+
 ## Security and content rules
 
 - Secrets only in environment variables; `.env` is git-ignored and never committed.

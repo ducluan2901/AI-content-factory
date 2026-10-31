@@ -4,6 +4,8 @@ Walking skeleton (BACKLOG A.1): SCRIPT -> VOICE -> VISUALS -> SUBTITLES -> RENDE
 -> AWAITING_APPROVAL -> (human) -> EXPORTED. Research / strategy / SEO / stock arrive in weeks 2-3.
 """
 import asyncio
+import hashlib
+import re
 import json
 import shutil
 import time
@@ -53,13 +55,57 @@ def rel(s: Settings, p: Path) -> str:
     return p.resolve().relative_to(s.storage_dir.resolve()).as_posix()
 
 
+def load_prompt(name: str) -> tuple[str, str]:
+    """Template text and its version tag (name@sha8), so every stage_run records exactly which prompt ran."""
+    text = (ROOT / "app" / "prompts" / f"{name}.md").read_text(encoding="utf-8")
+    return text, f"{name}@{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
+
+
+def script_checks(script: ScriptOut, job: ContentJob, est_s: float) -> list[dict]:
+    """Advisory checks shown at script review, before any voice or render time is spent."""
+    lo, hi = round(job.target_duration_s * 0.8), round(job.target_duration_s * 1.2)
+    n, hook = len(script.scenes), len(script.scenes[0].narration.split())
+    min_n, max_n = max(3, job.target_duration_s // 8), max(4, job.target_duration_s // 5)
+    longest_card = max(len(sc.on_screen_text.split()) for sc in script.scenes)
+    digits = [sc.narration for sc in script.scenes if re.search(r"\d", sc.narration)]
+
+    def c(rule, passed, expected, actual, message):
+        return {"rule": rule, "passed": bool(passed), "expected": str(expected), "actual": str(actual), "message": message}
+
+    return [
+        c("estimated_duration", lo <= est_s <= hi, f"{lo}-{hi}s", f"{est_s}s", "Spoken length estimate is inside the target window."),
+        c("scene_count", min_n <= n <= max_n, f"{min_n}-{max_n}", n, "Scene count fits the length."),
+        c("hook_length", hook <= 20, "<=20 syllables", hook, "The hook fits in the first 2-3 seconds."),
+        c("on_screen_text", longest_card <= 8, "<=8 words", longest_card, "Card headlines stay readable."),
+        c("platform_limits", len(script.title) <= 90 and len(script.caption) <= 300 and 3 <= len(script.hashtags) <= 8,
+          "title<=90, caption<=300, 3-8 tags", f"{len(script.title)}, {len(script.caption)}, {len(script.hashtags)}", "Title, caption and hashtags fit every platform."),
+        c("product_facts", job.format != "gadget" or bool(job.input_product_desc), "product facts given", "given" if job.input_product_desc else "missing",
+          "Gadget scripts must come from given product facts, never invented ones."),
+        c("numbers_to_verify", not digits, "no figures", f"{len(digits)} scene(s) with figures", "Every number in the narration must be verified before approval."),
+    ]
+
+
+def finish_script(script: ScriptOut, job: ContentJob, job_dir: Path, version: int) -> dict:
+    """Shared tail of the LLM stage and a human edit: estimate, checks, and the script-v{n}.json artifact."""
+    rate = SYLLABLES_PER_S[job.language]
+    syll = sum(len(sc.narration.split()) for sc in script.scenes)
+    est = round(syll / rate, 1)
+    out = script.model_dump() | {"version": version, "syllable_count": syll, "estimated_duration_s": est, "checks": script_checks(script, job, est)}
+    (job_dir / "script").mkdir(parents=True, exist_ok=True)
+    (job_dir / "script" / f"script-v{version}.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    return out
+
+
+
 async def stage_script(ctx: dict) -> dict:
     s, job = ctx["settings"], ctx["job"]
     rate = SYLLABLES_PER_S[job.language]
-    prompt = (ROOT / "app" / "prompts" / "script.md").read_text(encoding="utf-8").format(
+    template, v_main = load_prompt("script")
+    guide, v_fmt = load_prompt(f"format_{job.format if job.format in FORMATS else 'facts'}")
+    prompt = template.format(
         topic=job.input_topic,
         product_block=f"Product to feature: {job.input_product_desc}\n" if job.input_product_desc else "",
-        format_guide=FORMATS.get(job.format, FORMATS["facts"])["guide"],
+        format_guide=guide.strip(),
         language_name=LANG_NAMES[job.language],
         duration=job.target_duration_s,
         syllables=int(job.target_duration_s * rate),
@@ -68,9 +114,15 @@ async def stage_script(ctx: dict) -> dict:
         min_scenes=max(3, job.target_duration_s // 8),
         max_scenes=max(4, job.target_duration_s // 5),
     )
+    if job.operator_notes:  # regeneration: the operator's feedback and the draft it refers to
+        prompt += f"\n\nThe operator reviewed a previous draft and asked for these changes:\n{job.operator_notes}"
+        if ctx.get("previous"):
+            prev = {k: ctx["previous"][k] for k in ("title", "caption", "hashtags", "scenes") if k in ctx["previous"]}
+            prompt += "\n\nPrevious draft (JSON):\n" + json.dumps(prev, ensure_ascii=False)[:4000]
+        prompt += "\n\nWrite a new draft that applies the feedback and keeps what the operator did not mention."
     log = {"prompt": prompt, "responses": []}
     log_path = ctx["dir"] / "_llm" / f"SCRIPT-{ctx['attempt']}.json"
-    meta = {"provider": ctx["llm"].name, "cost_usd": 0.0, "log_path": rel(s, log_path)}
+    meta = {"provider": ctx["llm"].name, "cost_usd": 0.0, "log_path": rel(s, log_path), "prompt_version": f"{v_main} {v_fmt}"}
     try:
         for _ in range(2):  # one error-fed repair attempt (ARCHITECTURE §4)
             resp = await ctx["llm"].complete(prompt, timeout_s=s.stage_timeout_s)
@@ -87,11 +139,7 @@ async def stage_script(ctx: dict) -> dict:
             raise SchemaError(f"script JSON invalid after repair: {err[:300]}")
     finally:
         log_path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
-    out = script.model_dump()
-    syll = sum(len(sc.narration.split()) for sc in script.scenes)
-    out.update(syllable_count=syll, estimated_duration_s=round(syll / rate, 1), _meta=meta)
-    (ctx["dir"] / "script" / "script-v1.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    return out
+    return finish_script(script, job, ctx["dir"], ctx["attempt"]) | {"_meta": meta}
 
 
 async def stage_voice(ctx: dict) -> dict:
@@ -222,7 +270,10 @@ class Pipeline:
                 db.get(ContentJob, job.id).current_stage = name
                 db.commit()
             t0 = time.perf_counter()
-            ctx = {"settings": self.s, "llm": self.llm, "tts": self.tts, "job": job, "dir": self.job_dir(job.id), "attempt": attempt, "up": up}
+            with self.sm() as db:  # newest earlier output of this stage, superseded or not, for re-runs that build on it
+                prev = db.scalars(select(StageRun).where(StageRun.job_id == job.id, StageRun.stage == name, StageRun.status == "OK").order_by(StageRun.attempt.desc())).first()
+            ctx = {"settings": self.s, "llm": self.llm, "tts": self.tts, "job": job, "dir": self.job_dir(job.id), "attempt": attempt, "up": up,
+                   "previous": json.loads(prev.output_json) if prev else None}
             try:
                 out = await asyncio.wait_for(fn(ctx), timeout=self.s.stage_timeout_s)
                 status, err = "OK", None
@@ -238,6 +289,7 @@ class Pipeline:
                     meta = out.pop("_meta", {})
                     run.output_json = json.dumps(out, ensure_ascii=False)
                     run.provider, run.model = meta.get("provider"), meta.get("model")
+                    run.prompt_version = meta.get("prompt_version")
                     run.tokens_in, run.tokens_out, run.log_path = meta.get("tokens_in"), meta.get("tokens_out"), meta.get("log_path")
                     run.cost_usd = meta.get("cost_usd", 0.0)
                     db.get(ContentJob, job.id).total_cost_usd += run.cost_usd
@@ -258,6 +310,7 @@ class Pipeline:
             job.status, job.started_at, job.error_summary = "RUNNING", job.started_at or now(), None
             db.commit()
         up: dict = {}
+        final, summary, name = None, None, None
         try:
             for name, fn, attempts in STAGES:
                 with self.sm() as db:
@@ -266,8 +319,12 @@ class Pipeline:
                     up[name] = json.loads(done.output_json)
                 else:
                     up[name] = await self._run_stage(job, name, fn, attempts, up)
-            final = "AWAITING_APPROVAL" if up["QUALITY"]["passed"] else "NEEDS_REVISION"
-            summary = None if up["QUALITY"]["passed"] else "; ".join(c["message"] for c in up["QUALITY"]["checks"] if c["severity"] == "error" and not c["passed"])
+                if name == "SCRIPT" and job.review_script and not job.script_approved_at:
+                    final = "SCRIPT_REVIEW"  # plan §7.5: a human approves the script before voice and render
+                    break
+            if final is None:
+                final = "AWAITING_APPROVAL" if up["QUALITY"]["passed"] else "NEEDS_REVISION"
+                summary = None if up["QUALITY"]["passed"] else "; ".join(c["message"] for c in up["QUALITY"]["checks"] if c["severity"] == "error" and not c["passed"])
         except Exception as e:
             final, summary = "FAILED", f"{name}: {type(e).__name__}: {e}"[:1000]
         with self.sm() as db:
@@ -275,6 +332,7 @@ class Pipeline:
             job.status, job.error_summary, job.current_stage, job.finished_at = final, summary, None, now()
             db.commit()
         return final
+
 
 
 # ---------------------------------------------------------------- job service: the approval wall (ARCHITECTURE §8)
@@ -287,6 +345,13 @@ class GateError(Exception):
 RERUNNABLE = {"FAILED", "NEEDS_REVISION", "REJECTED"}
 
 
+def supersede_from(db: Session, job_id: str, from_stage: str, token: str) -> None:
+    """Mark the live runs of from_stage and everything after it as superseded; the rows stay for the audit trail."""
+    for name in STAGE_NAMES[STAGE_NAMES.index(from_stage):]:
+        for run in db.scalars(select(StageRun).where(StageRun.job_id == job_id, StageRun.stage == name, StageRun.superseded_by.is_(None))):
+            run.superseded_by = token
+
+
 def requeue(db: Session, job_id: str, from_stage: str | None) -> ContentJob:
     job = db.get(ContentJob, job_id)
     if job.status not in RERUNNABLE:
@@ -294,15 +359,63 @@ def requeue(db: Session, job_id: str, from_stage: str | None) -> ContentJob:
     if from_stage:
         if from_stage not in STAGE_NAMES:
             raise GateError(f"unknown stage {from_stage}")
-        token = f"rerun@{now()}"  # shortcut: marker instead of the new run's id; link runs when per-stage re-run UI lands (W3 3.5)
-        for name in STAGE_NAMES[STAGE_NAMES.index(from_stage):]:
-            for run in db.scalars(select(StageRun).where(StageRun.job_id == job_id, StageRun.stage == name, StageRun.superseded_by.is_(None))):
-                run.superseded_by = token
+        # shortcut: marker instead of the new run's id; link runs when per-stage re-run UI lands (W3 3.5)
+        supersede_from(db, job_id, from_stage, f"rerun@{now()}")
     elif job.status != "FAILED":
         raise GateError("from_stage is required unless the job FAILED (a plain resume would reproduce the same result)")
     job.status, job.finished_at = "QUEUED", None
     db.commit()
     return job
+
+
+# ---------------------------------------------------------------- script gate (plan §7.5 SCRIPT_GENERATED -> SCRIPT_APPROVED)
+
+SCRIPT_EDITABLE = {"SCRIPT_REVIEW", "NEEDS_REVISION", "REJECTED", "FAILED"}
+
+
+def save_script(db: Session, s: Settings, job_id: str, data: dict, edited_by: str) -> dict:
+    """A human-edited script becomes a new SCRIPT run (provider 'human'); later stages are superseded and must re-run."""
+    job = db.get(ContentJob, job_id)
+    if job.status not in SCRIPT_EDITABLE:
+        raise GateError(f"job is {job.status}; the script can be edited in {sorted(SCRIPT_EDITABLE)}")
+    if not edited_by.strip():
+        raise GateError("edited_by is required")
+    script = ScriptOut.model_validate(data)
+    supersede_from(db, job_id, "SCRIPT", f"edit@{now()}")
+    attempt = len(db.scalars(select(StageRun.id).where(StageRun.job_id == job_id, StageRun.stage == "SCRIPT")).all()) + 1
+    out = finish_script(script, job, s.storage_dir / "jobs" / job_id, attempt)
+    db.add(StageRun(job_id=job_id, stage="SCRIPT", attempt=attempt, status="OK", provider="human", model=edited_by.strip(),
+                    input_json=json.dumps({"edited_by": edited_by.strip()}), output_json=json.dumps(out, ensure_ascii=False), finished_at=now()))
+    job.status, job.script_approved_at, job.current_stage, job.error_summary = "SCRIPT_REVIEW", None, None, None
+    db.commit()
+    return out
+
+
+def approve_script(db: Session, job_id: str, approved_by: str, notes: str | None) -> ContentJob:
+    job = db.get(ContentJob, job_id)
+    if job.status != "SCRIPT_REVIEW":
+        raise GateError(f"job is {job.status}, not SCRIPT_REVIEW")
+    if not approved_by.strip():
+        raise GateError("approved_by is required")
+    db.add(Approval(job_id=job_id, decision="script_approved", approved_by=approved_by.strip(), notes=notes))
+    job.script_approved_at, job.status, job.finished_at = now(), "QUEUED", None
+    db.commit()
+    return job
+
+
+def regenerate_script(db: Session, job_id: str, notes: str, requested_by: str) -> ContentJob:
+    """Reject the draft with feedback; the next SCRIPT run sees the notes and the previous draft."""
+    job = db.get(ContentJob, job_id)
+    if job.status not in SCRIPT_EDITABLE:
+        raise GateError(f"job is {job.status}; regenerate is allowed in {sorted(SCRIPT_EDITABLE)}")
+    if not notes.strip() or not requested_by.strip():
+        raise GateError("notes and requested_by are required")
+    db.add(Approval(job_id=job_id, decision="script_rejected", approved_by=requested_by.strip(), notes=notes))
+    supersede_from(db, job_id, "SCRIPT", f"regen@{now()}")
+    job.operator_notes, job.script_approved_at, job.status, job.finished_at, job.error_summary = notes.strip(), None, "QUEUED", None, None
+    db.commit()
+    return job
+
 
 
 def decide(db: Session, job_id: str, decision: str, approved_by: str, notes: str | None) -> ContentJob:

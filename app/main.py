@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
 from app import pipeline, planner
@@ -26,6 +26,7 @@ class JobIn(BaseModel):
     format: str = Field(default="facts", pattern=FORMAT_RE)
     channel_id: str | None = None
     target_duration_s: int | None = Field(default=None, ge=15, le=90)  # None: the format's default
+    review_script: bool = True  # pause at SCRIPT_REVIEW before voice and render
 
 
 class ChannelIn(BaseModel):
@@ -99,6 +100,20 @@ class RerunIn(BaseModel):
     from_stage: str | None = None
 
 
+class ScriptEditIn(BaseModel):
+    edited_by: str = Field(min_length=1, max_length=100)
+    script: dict  # validated by pipeline.ScriptOut: title, caption, hashtags, scenes
+
+
+class RegenerateIn(BaseModel):
+    requested_by: str = Field(min_length=1, max_length=100)
+    notes: str = Field(min_length=3, max_length=2000)
+
+
+class BatchIn(BaseModel):
+    idea_ids: list[str] = Field(min_length=1, max_length=20)
+
+
 def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
     s = settings or Settings()
     s.check()
@@ -158,7 +173,8 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
                 get_or_404(db, Channel, body.channel_id)
             job = ContentJob(title=body.topic[:120], input_kind="product" if body.product_desc else "topic", input_topic=body.topic,
                              input_product_desc=body.product_desc, language=body.language, format=body.format, channel_id=body.channel_id,
-                             target_duration_s=body.target_duration_s or planner.default_duration(body.format), profile=s.app_env, status="QUEUED")
+                             target_duration_s=body.target_duration_s or planner.default_duration(body.format), review_script=body.review_script,
+                             profile=s.app_env, status="QUEUED")
             db.add(job)
             db.commit()
             await queue.put(job.id)
@@ -301,6 +317,53 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
                 return row_dict(pipeline.decide(db, job_id, "rejected", body.approved_by, body.notes))
             except pipeline.GateError as e:
                 raise HTTPException(409, str(e))
+
+    # ---------------------------------------------------------------- script gate (Sprint 2)
+
+    @app.put("/jobs/{job_id}/script")
+    def edit_script(job_id: str, body: ScriptEditIn):
+        with sm() as db:
+            get_job(db, job_id)
+            try:
+                return pipeline.save_script(db, s, job_id, body.script, body.edited_by)
+            except pipeline.GateError as e:
+                raise HTTPException(409, str(e))
+            except ValidationError as e:
+                raise HTTPException(422, e.errors(include_url=False))
+
+    @app.post("/jobs/{job_id}/script/approve")
+    async def approve_script(job_id: str, body: DecisionIn):
+        with sm() as db:
+            get_job(db, job_id)
+            try:
+                job = pipeline.approve_script(db, job_id, body.approved_by, body.notes)
+            except pipeline.GateError as e:
+                raise HTTPException(409, str(e))
+            await queue.put(job_id)  # continue from VOICE; SCRIPT already has an OK run
+            return row_dict(job)
+
+    @app.post("/jobs/{job_id}/script/regenerate")
+    async def regenerate_script(job_id: str, body: RegenerateIn):
+        with sm() as db:
+            get_job(db, job_id)
+            try:
+                job = pipeline.regenerate_script(db, job_id, body.notes, body.requested_by)
+            except pipeline.GateError as e:
+                raise HTTPException(409, str(e))
+            await queue.put(job_id)
+            return row_dict(job)
+
+    @app.post("/ideas/batch-jobs", status_code=201)
+    async def batch_jobs(body: BatchIn):
+        """Queue several ideas at once (plan: 10 scripts per batch). Jobs stop at SCRIPT_REVIEW, so nothing is rendered unreviewed."""
+        with sm() as db:
+            ideas = [get_or_404(db, ContentIdea, i) for i in body.idea_ids]
+            if dropped := [i.id for i in ideas if i.status == "dropped"]:
+                raise HTTPException(409, f"dropped ideas: {dropped}")
+            jobs = [planner.job_from_idea(db, i, s.app_env) for i in ideas]
+            for j in jobs:
+                await queue.put(j.id)
+            return [row_dict(j) for j in jobs]
 
     @app.post("/jobs/{job_id}/run")
     async def rerun(job_id: str, body: RerunIn):

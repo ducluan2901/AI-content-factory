@@ -279,6 +279,15 @@ Exists separately from `stage_run.cost_usd` because one stage can make several p
 `stage_run` stores `prompt_version_id`. When output quality changes between two jobs, the
 first question is which prompt ran — this answers it without git archaeology.
 
+### Sprint 2 additions
+
+`content_job` gains `review_script` (default 1), `script_approved_at` and `operator_notes` (feedback fed to
+the next script generation). `stage_run` gains `prompt_version` (`script@sha8 format_<code>@sha8`), which
+stands in for the `prompt_version` table of §4.15 until prompts need a registry. A human edit is a `stage_run`
+row with `provider = 'human'` and the editor's name in `model`. The script gate writes `approval` rows with
+`decision` `script_approved` or `script_rejected`. New job status: `SCRIPT_REVIEW`
+(`RUNNING → SCRIPT_REVIEW → QUEUED`).
+
 ### 4.16 `channel` — Sprint 1 (30-day plan §2.1)
 
 `id` (`ch_…`), `tenant_id`, `name`, `market` (`vn` | `global`), `language`, `positioning`, `voice_id` (overrides

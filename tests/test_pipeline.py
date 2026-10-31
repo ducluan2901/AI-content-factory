@@ -44,6 +44,11 @@ def test_happy_path_requires_approval_then_exports(tmp_path):
     with TestClient(app) as c:
         job_id = c.post("/jobs", json={"topic": "Tại sao AI agent sẽ thay đổi cách làm việc năm 2026", "target_duration_s": 55}).json()["id"]
         d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "SCRIPT_REVIEW", d["job"]["error_summary"]
+        assert set(d["outputs"]) == {"SCRIPT"}  # nothing voiced or rendered before the script is approved
+        assert c.post(f"/jobs/{job_id}/approve", json={"approved_by": "founder"}).status_code == 409
+        assert c.post(f"/jobs/{job_id}/script/approve", json={"approved_by": "founder"}).status_code == 200
+        d = run_to_rest(c, job_id)
         assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
         r = d["outputs"]["RENDER"]
         assert (r["width"], r["height"], r["video_codec"], r["audio_codec"]) == (1080, 1920, "h264", "aac")
@@ -67,7 +72,7 @@ def test_quality_gate_catches_short_script(tmp_path):  # PRD S2
     s = settings(tmp_path)
     app = create_app(s, llm=FixtureLLM(FIX / "script_short.json"), tts=FixtureTTS(s.ffmpeg_path))
     with TestClient(app) as c:
-        job_id = c.post("/jobs", json={"topic": "short"}).json()["id"]
+        job_id = c.post("/jobs", json={"topic": "short", "review_script": False}).json()["id"]
         d = run_to_rest(c, job_id)
         assert d["job"]["status"] == "NEEDS_REVISION"
         failed = [x["rule"] for x in d["outputs"]["QUALITY"]["checks"] if not x["passed"] and x["severity"] == "error"]
