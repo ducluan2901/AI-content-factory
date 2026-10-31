@@ -204,8 +204,9 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        with sm() as db:  # resume jobs a crash or restart interrupted
-            for jid in db.scalars(select(ContentJob.id).where(ContentJob.status.in_(["QUEUED", "RUNNING"])).order_by(ContentJob.created_at)):
+        with sm() as db:  # resume jobs a crash or restart interrupted; only this process's own (the experiment agent shares the DB)
+            for jid in db.scalars(select(ContentJob.id).where(ContentJob.status.in_(["QUEUED", "RUNNING"]), ContentJob.profile == s.app_env)
+                                  .order_by(ContentJob.created_at)):
                 queue.put_nowait(jid)
         task = asyncio.create_task(worker())
         yield

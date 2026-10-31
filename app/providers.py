@@ -260,6 +260,45 @@ class PexelsProvider:
             return None
 
 
+class PixabayProvider:
+    """Free stock photos from Pixabay (free key, issued at once on sign-up; Pexels has paused new keys).
+    Pixabay Content License: free use, no attribution required. Images are downloaded, never hot-linked.
+    Never raises for "no result" or a transient problem - the caller falls back to a title card (BACKLOG R4)."""
+
+    name = "pixabay"
+    licence = "pixabay"
+    licence_url = "https://pixabay.com/service/license-summary/"
+
+    @staticmethod
+    def attribution(photo: "StockPhoto") -> str:
+        return f"Image by {photo.author} on Pixabay"
+
+    def __init__(self, api_key: str, cache_dir: Path, client: httpx.AsyncClient | None = None):
+        self.api_key, self.cache_dir = api_key, cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.client = client or httpx.AsyncClient(base_url="https://pixabay.com", timeout=15)
+
+    async def search_photo(self, query: str) -> StockPhoto | None:
+        try:
+            resp = await self.client.get("/api/", params={"key": self.api_key, "q": query[:100], "image_type": "photo",
+                                                          "orientation": "vertical", "safesearch": "true", "per_page": 3})
+            resp.raise_for_status()
+            hits = resp.json().get("hits") or []
+            if not hits:
+                return None
+            hit = hits[0]
+            url = hit["largeImageURL"]
+            cached = self.cache_dir / f"pixabay-{hit['id']}.jpg"
+            if not cached.is_file():
+                img = await self.client.get(url, follow_redirects=True)
+                img.raise_for_status()
+                cached.write_bytes(img.content)
+            return StockPhoto(cached, str(hit["id"]), hit["pageURL"], hit.get("user") or "Pixabay contributor")
+        except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
+            log.warning("pixabay search failed for %r", query, exc_info=True)
+            return None
+
+
 class FixtureStock:
     """Offline twin: a small deterministic local image, so tests exercise the stock-asset path for free."""
 
@@ -327,6 +366,11 @@ def build_stock(s: Settings):
         return LocalStock(s.local_stock_dir)
     if s.stock_provider == "fixture":
         return FixtureStock(s.storage_dir / "stock_cache")
+    if s.stock_provider == "pixabay":
+        if not (s.pixabay_api_key and s.pixabay_api_key.get_secret_value()):
+            log.warning("STOCK_PROVIDER=pixabay but PIXABAY_API_KEY is empty; every scene will fall back to a title card")
+            return None
+        return PixabayProvider(s.pixabay_api_key.get_secret_value(), s.storage_dir / "stock_cache")
     if s.stock_provider == "pexels":
         if not (s.pexels_api_key and s.pexels_api_key.get_secret_value()):
             log.warning("STOCK_PROVIDER=pexels but PEXELS_API_KEY is empty; every scene will fall back to a title card")

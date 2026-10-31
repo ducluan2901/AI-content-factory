@@ -15,7 +15,7 @@ from PIL import Image
 from app import media
 from app.config import Settings
 from app.main import create_app
-from app.providers import FixtureLLM, FixtureStock, FixtureTTS, PexelsProvider, build_stock
+from app.providers import FixtureLLM, FixtureStock, FixtureTTS, PexelsProvider, PixabayProvider, build_stock
 
 FFMPEG = os.environ.get("FFMPEG_PATH") or shutil.which("ffmpeg")
 FFPROBE = os.environ.get("FFPROBE_PATH") or shutil.which("ffprobe")
@@ -394,3 +394,28 @@ def test_hashtags_become_lowercase_ascii():
     sc = ScriptOut(title="title", caption="cap", hashtags=["#Hài Hước", "điều hoà", "#AI2026"],
                    scenes=[{"narration": "câu một dài", "on_screen_text": "a"}, {"narration": "câu hai dài", "on_screen_text": "b"}])
     assert sc.hashtags == ["#haihuoc", "#dieuhoa", "#ai2026"]
+
+
+@pytest.mark.anyio
+async def test_pixabay_search_downloads_once_and_degrades_quietly(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path == "/api/":
+            assert request.url.params["key"] == "k" and request.url.params["orientation"] == "vertical"
+            hits = [] if request.url.params["q"] == "nothing" else [{"id": 7, "pageURL": "https://pixabay.com/photos/7",
+                                                                     "largeImageURL": "https://pixabay.com/get/7.jpg", "user": "ann"}]
+            return httpx.Response(200, json={"hits": hits})
+        if request.url.path == "/get/7.jpg":
+            return httpx.Response(200, content=tiny_jpeg())
+        return httpx.Response(500)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://pixabay.com")
+    prov = PixabayProvider("k", tmp_path / "cache", client=client)
+    a = await prov.search_photo("family living room")
+    b = await prov.search_photo("family living room")
+    assert a.path == b.path and a.path.is_file() and a.source_url == "https://pixabay.com/photos/7" and prov.attribution(a) == "Image by ann on Pixabay"
+    assert calls.count("/get/7.jpg") == 1  # cached
+    assert await prov.search_photo("nothing") is None
+    assert build_stock(settings(tmp_path, stock_provider="pixabay")) is None  # no key: cards, not a crash

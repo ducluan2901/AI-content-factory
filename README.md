@@ -159,7 +159,11 @@ would carry. No match, no key configured, or a Pexels error all fall back to a t
 never shipped with an unrecorded licence (BACKLOG R4). Every asset records its licence; stock photos carry
 `licence: pexels`, `source_url`, `source_id` and `author`, same as a card's `licence: generated`.
 
-**No Pexels key? Use your own images.** Pexels has paused new API keys, so there is a second source that needs
+**Pixabay: a free key, issued at once.** Pexels has paused new keys; Pixabay has not. Sign up at pixabay.com, open
+pixabay.com/api/docs (the key is printed on that page), put it in `.env` as `PIXABAY_API_KEY` and set
+`STOCK_PROVIDER=pixabay`. Pixabay Content License: free use, no attribution needed; images are downloaded, never hot-linked.
+
+**No key at all? Use your own images.** Pexels has paused new API keys, so there is a second source that needs
 no key or account: set `STOCK_PROVIDER=local` and drop images into `assets/stock` (`LOCAL_STOCK_DIR`). Name
 each file with the words that describe it, in English or Vietnamese, with or without diacritics:
 `cat-kitchen-night.jpg`, `meo-dua-chuot.png`. A scene takes the file sharing the most words with its
@@ -236,6 +240,21 @@ cost record.
 A post with an affiliate link needs a disclosure where the platform or the law asks for one (plan §12.4):
 `POST /jobs/{id}/publications` with `affiliate_product_id` is refused unless `disclosure_confirmed` is true.
 The Revenue page in the console covers all of this.
+
+## Viral pacing, music and the two-day script experiment
+
+Each spoken sentence is its own full-screen card (timed by the voice's sentence boundaries), the scene headline's
+words are coloured, every card lands with a zoom punch. Drop royalty-free tracks into `assets/music` (`MUSIC_DIR`)
+and the render loops one under the voice at -17 dB; an empty folder means no music. `TTS_RATE` (default +10%) sets
+the Edge voice speed. Trend Radar has a button that imports today's Google Daily Search Trends for Vietnam.
+
+`scriptsun_experiment.ps1` starts the experiment agent (`app/experiment.py`) in its own window, next to the API.
+Over about 40 hours it makes 30 comedy videos: day 1 compares three hook styles and three voice rates, an Opus
+editor scores every script blind, an optimizer rewrites the comedy guide into v2, and day 2 makes each topic three
+ways (v1 Sonnet, v2 Sonnet, v2 Opus). It never approves, exports or posts: every video waits in the console for the
+founder. Its prompts, state, log and `report.md` live in `storage/experiments/<id>/`; production prompts are not
+touched until you copy `format_comedy_v2.md` over `app/prompts/format_comedy.md` yourself. A hard budget cap
+(`CAP_USD` in `app/experiment.py`) stops it before overspending; a restart with the same id resumes.
 
 ## Security and content rules
 
