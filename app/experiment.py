@@ -238,7 +238,24 @@ Return ONLY JSON: {{"scores": {{"S1": {{"hook": 0, "escalation": 0, "payoff": 0,
             self.judge(rnd)
             rnd["judged"] = True
             self.save()
+            self.shortlist()
         return not self.state["stopped"]
+
+    def shortlist(self) -> Path:
+        """shortlist.md: every judged video, best first, for whoever reviews them (the founder, or Cowork preparing them).
+        Statuses are as of the round; the console has the live one."""
+        vids = sorted((v for r in self.state["rounds"] for v in r["videos"] if v.get("judge")), key=lambda v: -v["judge"]["overall"])
+        md = ["# Video thử nghiệm, xếp theo điểm giám khảo\n", "Điểm do model biên tập chấm trên kịch bản, không phải người xem thật. "
+              "Duyệt cuối và đăng luôn do founder bấm.\n"]
+        for i, v in enumerate(vids, 1):
+            j, sc = v["judge"], v["script"]
+            md.append(f"## {i}. {sc['title']}\n\n- Điểm: {j['overall']}/10 (câu mở {j['hook']}, cú lật {j['payoff']}, gây bình luận {j['comments']})\n"
+                      f"- Job: `{v['job_id']}` · trạng thái lúc dựng: {v['status']} · {v.get('duration_s', '-')} s\n"
+                      f"- Cần sửa: {j.get('fix', '')}\n- Rủi ro: {'; '.join(j.get('risks') or []) or 'không'}\n"
+                      f"- Caption: {sc['caption']}\n- Hashtag: {' '.join(sc['hashtags'])}\n")
+        path = self.dir / "shortlist.md"
+        path.write_text("\n".join(md), encoding="utf-8")
+        return path
 
     # ---------------------------------------------------------------- between the days
     def optimize(self) -> None:
