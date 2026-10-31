@@ -220,7 +220,7 @@ Everything here is typed in from a statement, a program dashboard or an invoice;
 | Endpoint | Purpose |
 |---|---|
 | `POST, GET /affiliate/products`, `PATCH /affiliate/products/{id}` | products you may link: program, code, link, commission, status; the list shows clicks and orders per product |
-| `POST /affiliate/clicks` | a click count from the program's dashboard, optionally tied to a post |
+| `POST /affiliate/clicks` | NEW clicks since your previous entry (entries are added together, so do not type the dashboard's running total); the reply shows the product's total so a double entry is visible |
 | `POST, GET /revenue`, `PATCH /revenue/{id}` | money in (affiliate, service, booking, platform_ad) or out (`cost`), with a status |
 | `GET /revenue/summary` | the honest report |
 
@@ -230,7 +230,7 @@ is a new record. Only approved and paid money counts as earned; estimated and pe
 Clicks are never orders: orders-per-click appears only when both numbers exist. Amounts in VND and USD are
 never added together. Set `USD_VND_RATE` if you want one combined VND line, which is then shown next to the
 per-currency figures, labelled with the rate used. The LLM cost the pipeline recorded per job is shown as its own
-USD line and as a cost per exported video; the monthly subscription is not included unless you enter it as a
+USD line and as a cost per exported video (a video posted on several platforms shares one cost across its posts); the monthly subscription is not included unless you enter it as a
 cost record.
 
 A post with an affiliate link needs a disclosure where the platform or the law asks for one (plan §12.4):

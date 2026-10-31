@@ -307,5 +307,9 @@ def test_local_photos_mix_with_cards_and_are_recorded_as_owned(tmp_path):
         cards = [a for a in assets if a["kind"] == "title_card"]
         assert photos and cards and d["outputs"]["VISUALS"]["stock_hits"] == len(photos)
         for a in photos:
-            assert a["licence"] == "owned" and a["source_provider"] == "local" and a["attribution_text"] is None and a["source_url"].startswith("file:")
+            assert a["licence"] == "owned" and a["source_provider"] == "local" and a["attribution_text"] is None and a["source_url"] is None
         assert all(a["licence"] == "generated" for a in cards)
+        # the client bundle must not carry anything that identifies this machine
+        assert c.post(f"/jobs/{job_id}/approve", json={"approved_by": "founder"}).status_code == 200
+        manifest = (tmp_path / "jobs" / job_id / "export" / "manifest.json").read_text(encoding="utf-8")
+        assert tmp_path.name not in manifest and "file:" not in manifest and "chatbot-agent-hanh-dong.jpg" in manifest

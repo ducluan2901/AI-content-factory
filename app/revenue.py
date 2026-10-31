@@ -74,14 +74,17 @@ def summary(db: Session, usd_vnd_rate: float | None = None) -> dict:
 
     # ---- per video: income attributed to its post, against its own LLM cost
     videos = []
+    posts = dict(db.execute(select(Publication.job_id, func.count()).group_by(Publication.job_id)).all())
     for pub in db.scalars(select(Publication)):
         job = db.get(ContentJob, pub.job_id)
         inc = {}
         for r in db.scalars(select(RevenueRecord).where(RevenueRecord.publication_id == pub.id, RevenueRecord.kind != "cost", RevenueRecord.status.in_(RECOGNISED))):
             inc[r.currency] = round(inc.get(r.currency, 0.0) + r.amount, 2)
         vclicks = db.scalar(select(func.coalesce(func.sum(AffiliateClick.clicks), 0)).where(AffiliateClick.publication_id == pub.id)) or 0
+        n = posts[pub.job_id]  # one video, one LLM cost: split it over the posts so the rows add up to the real total
         videos.append({"publication_id": pub.id, "title": job.title, "platform": pub.platform, "format": job.format,
-                       "llm_cost_usd": round(job.total_cost_usd, 4), "recognised_income": inc, "clicks": vclicks})
+                       "llm_cost_usd": round(job.total_cost_usd / n, 4), "posts_of_this_video": n,
+                       "recognised_income": inc, "clicks": vclicks})
 
     return {
         "currencies": currencies,

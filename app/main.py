@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app import analytics, pipeline, planner, revenue
 from app.config import Settings
@@ -130,7 +130,7 @@ class ProductPatch(BaseModel):
 class ClickIn(BaseModel):
     product_id: str
     publication_id: str | None = None
-    clicks: int = Field(ge=0)
+    clicks: int = Field(ge=0, description="NEW clicks since your previous entry for this product, not the dashboard's running total")
     recorded_on: str | None = None  # YYYY-MM-DD, default today
     source: str | None = Field(default=None, max_length=200)
 
@@ -554,7 +554,8 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
                                  recorded_on=day(body.recorded_on), source=body.source)
             db.add(row)
             db.commit()
-            return row_dict(row)
+            total = db.scalar(select(func.coalesce(func.sum(AffiliateClick.clicks), 0)).where(AffiliateClick.product_id == body.product_id))
+            return row_dict(row) | {"product_total_clicks": total}
 
     @app.post("/revenue", status_code=201)
     def add_revenue(body: RevenueIn):
