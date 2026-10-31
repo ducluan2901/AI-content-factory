@@ -50,11 +50,11 @@ class AnthropicApiProvider:
 
     name = "anthropic_api"
 
-    def __init__(self, model: str, api_key: str | None = None, client=None):
+    def __init__(self, model: str, api_key: str | None = None, effort: str = "medium", client=None):
         import anthropic
 
         self._anthropic = anthropic
-        self.model = model
+        self.model, self.effort = model, effort
         self.client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=3)
 
     async def complete(self, prompt: str, timeout_s: int = 300) -> LLMResponse:
@@ -64,6 +64,7 @@ class AnthropicApiProvider:
                 model=self.model,
                 max_tokens=16000,
                 messages=[{"role": "user", "content": prompt}],
+                output_config={"effort": self.effort},
                 # on a safety decline the API re-runs the request on a fallback model it picks
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
@@ -197,7 +198,7 @@ def build_llm(s: Settings):
     if s.llm_provider == "anthropic_api":
         if not s.anthropic_api_key:
             raise RuntimeError("LLM_PROVIDER=anthropic_api needs ANTHROPIC_API_KEY in .env or the environment")
-        return AnthropicApiProvider(s.script_model, s.anthropic_api_key.get_secret_value())
+        return AnthropicApiProvider(s.script_model, s.anthropic_api_key.get_secret_value(), s.script_effort)
     if s.llm_provider == "claude_cli":
         return ClaudeCliProvider(s)
     if s.llm_provider == "fixture":

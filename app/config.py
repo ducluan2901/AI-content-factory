@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     app_env: str = "dev"  # dev | prod | test
     llm_provider: str = "anthropic_api"  # anthropic_api | claude_cli (dev-only) | fixture
     script_model: str = "claude-sonnet-5-5"  # founder decision: never downgrade the script stage
+    # thinking tokens bill as output; medium keeps the script near the $0.025/video budget. Compare high at Gate 1.
+    script_effort: str = "medium"  # low | medium | high | xhigh | max
     anthropic_api_key: SecretStr | None = None  # from .env or the environment; SDK never sees .env itself
     claude_cli_path: str = "claude"
     claude_model: str = ""

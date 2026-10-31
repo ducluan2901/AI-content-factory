@@ -158,7 +158,7 @@ def test_anthropic_provider_costs_and_text():
     r = asyncio.run(AnthropicApiProvider("claude-sonnet-5-5", client=_FakeClient(msgs)).complete("hi"))
     assert r.text == '{"ok": 1}' and r.model == "claude-sonnet-5-5"
     assert r.cost_usd == pytest.approx((18000 * 2 + 6000 * 10) / 1e6)
-    assert msgs.kwargs["model"] == "claude-sonnet-5-5" and msgs.kwargs["fallbacks"] == "default"
+    assert msgs.kwargs["model"] == "claude-sonnet-5-5" and msgs.kwargs["fallbacks"] == "default" and msgs.kwargs["output_config"] == {"effort": "medium"}
 
 
 def test_anthropic_provider_refusal_is_not_retried():

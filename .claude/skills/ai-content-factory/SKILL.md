@@ -29,7 +29,7 @@ Bốn tài liệu ở gốc repo là nguồn sự thật. **Đừng suy diễn t
   cả tuần làm việc, nên đừng xây trước những thứ của tuần sau.
 - Đã xong: Python 3.12 và FFmpeg (item 1.1) trên máy laptop. **Máy khác phải cài lại** —
   xem `README.md`.
-- Chưa có dòng code ứng dụng nào.
+- Week 1 walking skeleton đã chạy được (README.md mục "What is built"): Script → Voice → Visuals → Subtitles → Render → Quality → duyệt → export. Research, Strategy, SEO riêng, stock footage và Alembic chưa làm.
 
 ## Năm luật không được phá
 
@@ -57,12 +57,14 @@ không phải lựa chọn thiết kế.
 
 Đây là lựa chọn của founder, tối ưu chi phí. Giá USD / 1 triệu token.
 
-| Stage | Model | Vì sao |
-|---|---|---|
-| Research | `claude-haiku-5-5` | bóc tách và cấu trúc dữ liệu, không cần suy luận sâu |
-| Strategy | `claude-haiku-5-5` | đủ tốt với brief theo khuôn |
-| **Script** | `claude-sonnet-5-5` | khâu quyết định chất lượng video — đừng hạ model ở đây |
-| SEO | `claude-haiku-5-5` | title/caption/hashtag theo giới hạn ký tự |
+| Stage | Model | Effort | Vì sao |
+|---|---|---|---|
+| Research | `claude-haiku-5-5` | `low` | bóc tách và cấu trúc dữ liệu, không cần suy luận sâu |
+| Strategy | `claude-haiku-5-5` | `low` | đủ tốt với brief theo khuôn |
+| **Script** | `claude-sonnet-5-5` | `medium` | khâu quyết định chất lượng video — đừng hạ model ở đây |
+| SEO | `claude-haiku-5-5` | `low` | title/caption/hashtag theo giới hạn ký tự |
+
+Token thinking tính như token output, nên effort là đòn bẩy chi phí thứ hai sau model. Script để `medium`; ở Gate 1 so một video `medium` với một video `high` rồi mới quyết. Đổi bằng `SCRIPT_EFFORT` trong `.env`.
 
 Giá: Haiku 5.5 $0,10 / $0,50 · Sonnet 5.5 $2,00 / $10,00 · Opus 5.5 $4,00 / $20,00.
 
@@ -82,16 +84,18 @@ gọi để kiểm chứng con số thật (item 4.6).
 
 Khác hẳn bảng trên: đây là model cho các agent viết code, tiêu hạn mức Max.
 
-| Việc | Subagent | Model | Ghi chú |
-|---|---|---|---|
-| Phân tích yêu cầu, lập kế hoạch từng bước | `architect` | `opus` | chỉ đọc; gọi trước khi code việc lớn |
-| Stage, service, provider, orchestrator, API | `backend-dev` | `sonnet` | phần lớn khối lượng Week 1 |
-| Model SQLAlchemy, Alembic, ràng buộc, index | `db-engineer` | `sonnet` | item 1.3 và mọi thay đổi schema |
-| Streamlit console | `frontend-dev` | `sonnet` | item 1.12, 2.8, 3.6 |
-| Test từng stage, test ràng buộc DB, e2e offline | `tester` | `sonnet` | chỉ sửa file test |
-| Soát diff tìm bug và vi phạm quy ước | `reviewer` | `opus` | giao diff, **không** giao kết luận sẵn |
-| Soát lộ secret, xử lý input ngoài, quyền | `security` | `opus` | bắt buộc trước khi thêm provider gọi mạng |
-| README, RUNBOOK, cập nhật tài liệu | `docs-writer` | `haiku` | đọc code lấy sự thật, không bịa |
+| Việc | Subagent | Model | Effort | Ghi chú |
+|---|---|---|---|---|
+| Phân tích yêu cầu, lập kế hoạch từng bước | `architect` | `opus` | `high` | chỉ đọc; gọi trước khi code việc lớn |
+| Stage, service, provider, orchestrator, API | `backend-dev` | `sonnet` | `medium` | phần lớn khối lượng Week 1 |
+| Model SQLAlchemy, Alembic, ràng buộc, index | `db-engineer` | `sonnet` | `medium` | item 1.3 và mọi thay đổi schema |
+| Streamlit console | `frontend-dev` | `sonnet` | `low` | item 1.12, 2.8, 3.6 |
+| Test từng stage, test ràng buộc DB, e2e offline | `tester` | `sonnet` | `medium` | chỉ sửa file test |
+| Soát diff tìm bug và vi phạm quy ước | `reviewer` | `opus` | `high` | giao diff, **không** giao kết luận sẵn |
+| Soát lộ secret, xử lý input ngoài, quyền | `security` | `opus` | `high` | bắt buộc trước khi thêm provider gọi mạng |
+| README, RUNBOOK, cập nhật tài liệu | `docs-writer` | `haiku` | `low` | đọc code lấy sự thật, không bịa |
+
+Định nghĩa từng subagent (model, effort, công cụ được dùng) nằm ở `.claude/agents/*.md`; sửa ở đó và giữ bảng này khớp.
 
 Nguyên tắc: **việc phán xét dùng Opus** (kiến trúc, review, bảo mật), **việc sản xuất dùng
 Sonnet** (viết code theo kế hoạch có sẵn), **việc cơ học dùng Haiku** (tài liệu).
