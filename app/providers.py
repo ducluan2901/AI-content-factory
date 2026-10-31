@@ -160,8 +160,8 @@ class EdgeTTS:
 
     name = "edge_tts"
 
-    def __init__(self, voices: dict[str, str]):
-        self.voices = voices
+    def __init__(self, voices: dict[str, str], rate: str = "+0%"):
+        self.voices, self.rate = voices, rate
 
     async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
         import edge_tts
@@ -171,7 +171,7 @@ class EdgeTTS:
         for attempt in range(5):
             sentences = []
             try:
-                comm = edge_tts.Communicate(text, voice or self.voices[language], boundary="SentenceBoundary")
+                comm = edge_tts.Communicate(text, voice or self.voices[language], rate=self.rate, boundary="SentenceBoundary")
                 with out.open("wb") as f:
                     async for chunk in comm.stream():
                         if chunk["type"] == "audio":
@@ -337,7 +337,7 @@ def build_stock(s: Settings):
 
 def build_tts(s: Settings):
     if s.tts_provider == "edge_tts":
-        return EdgeTTS({"vi": s.tts_voice_vi, "en": s.tts_voice_en})
+        return EdgeTTS({"vi": s.tts_voice_vi, "en": s.tts_voice_en}, s.tts_rate)
     if s.tts_provider == "fixture":
         return FixtureTTS(s.ffmpeg_path)
     raise ValueError(f"unknown TTS_PROVIDER {s.tts_provider}")

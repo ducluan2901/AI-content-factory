@@ -20,9 +20,11 @@ class Settings(BaseSettings):
     tts_provider: str = "edge_tts"  # edge_tts | fixture
     tts_voice_vi: str = "vi-VN-HoaiMyNeural"
     tts_voice_en: str = "en-US-AriaNeural"
+    tts_rate: str = "+10%"  # edge_tts speaking rate; the default read is too even for short punchy lines
     stock_provider: str = "pexels"  # pexels | local | none | fixture; pexels without a key degrades to "none"
     local_stock_dir: Path = Path("./assets/stock")  # STOCK_PROVIDER=local: your own images, matched by file name
     pexels_api_key: SecretStr | None = None
+    music_dir: Path = Path("./assets/music")  # background tracks (mp3/wav/m4a/ogg) you have the right to use; empty = no music
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     font_path: str = r"C:\Windows\Fonts\segoeuib.ttf"

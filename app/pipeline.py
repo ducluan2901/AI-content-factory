@@ -9,6 +9,7 @@ import re
 import json
 import shutil
 import time
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -23,10 +24,12 @@ from app.planner import FORMATS
 from app.providers import ProviderError, extract_json
 
 LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
-# Edge HoaiMy, measured: 3.3 syll/s on a 54 s script of long sentences, 2.44 on a 33 s comedy script of short punchy
-# ones (each scene is its own TTS clip, so short scenes carry more padding). 2.6 errs on the short side of a window
-# rather than overshooting it. Every VOICE run now records the observed rate; revise this from those numbers. en unmeasured.
-SYLLABLES_PER_S = {"vi": 2.6, "en": 2.6}
+# Edge HoaiMy at the default rate, measured: 3.3 syll/s on a 54 s script of long sentences, 2.44 on a 33 s comedy script
+# of short punchy ones (each scene is its own TTS clip, so short scenes carry more padding). With TTS_RATE=+10% and
+# viral-style scripts of very short sentences: 2.11 and 2.31 (each sentence ends in a pause). Every VOICE run records
+# the observed rate; revise this from those numbers. en unmeasured.
+SYLLABLES_PER_S = {"vi": 2.2, "en": 2.2}
+MUSIC_EXT = {".mp3", ".wav", ".m4a", ".ogg"}
 
 
 class SchemaError(Exception):
@@ -48,7 +51,9 @@ class ScriptOut(BaseModel):
     @field_validator("hashtags")
     @classmethod
     def _tags(cls, v: list[str]) -> list[str]:
-        return ["#" + t.lstrip("#").replace(" ", "") for t in v]
+        # platform convention, and what hashtag search actually matches: lowercase ASCII without diacritics (#haihuoc)
+        return ["#" + "".join(ch for ch in unicodedata.normalize("NFKD", t.replace("đ", "d").replace("Đ", "D")) if ch.isascii() and ch.isalnum()).lower()
+                for t in v]
 
 
 # ---------------------------------------------------------------- stages
@@ -207,29 +212,45 @@ async def stage_voice(ctx: dict) -> dict:
 
 
 async def stage_visuals(ctx: dict) -> dict:
-    """One asset per scene: a Pexels stock photo with the caption composited on, or a title card when no
-    stock provider is configured, the search found nothing, or the call failed (BACKLOG R4 - a card is a
-    licence-clean fallback, never ship an asset with an unrecorded licence)."""
-    s, scenes, stock = ctx["settings"], ctx["up"]["SCRIPT"]["scenes"], ctx.get("stock")
+    """One card per spoken sentence (kinetic captions): the sentence in big type with the scene headline's words in
+    colour, on the scene's stock photo when the search found one, or on a gradient card when no stock provider is
+    configured, the search found nothing, or the call failed (BACKLOG R4 - a card is a licence-clean fallback, never
+    ship an asset with an unrecorded licence). Each card starts exactly when its sentence does, from the voice
+    stage's sentence boundaries, and a scene's cards together cover the scene's voice span."""
+    s, scenes, stock, vo = ctx["settings"], ctx["up"]["SCRIPT"]["scenes"], ctx.get("stock"), ctx["up"]["VOICE"]
     d = ctx["dir"] / "visuals" / "cards"
     assets, stock_hits = [], 0
     for i, sc in enumerate(scenes):
-        p = d / f"{i:02}.png"
+        span = vo["scenes"][i]
+        segs = [x for x in vo["segments"] if x["scene_index"] == i] or [{"text": sc["narration"]}]
+        bounds = [span["start_ms"]] + [x["start_ms"] for x in segs[1:]] + [span["end_ms"]]
+        for k in range(1, len(bounds)):  # clamp inside the scene and keep the order; a scene's cards sum to its span
+            bounds[k] = min(max(bounds[k], bounds[k - 1]), span["end_ms"])
         photo = await stock.search_photo(sc.get("visual_query") or sc["on_screen_text"]) if stock else None
-        if photo:
-            await asyncio.to_thread(media.render_photo_card, photo.path, sc["on_screen_text"], i, len(scenes), s.font_path, p)
-            assets.append({"kind": "stock_image", "scene_index": i, "order_index": i, "path": rel(s, p), "width": media.W, "height": media.H,
-                           "source_provider": stock.name, "source_url": photo.source_url, "source_id": photo.source_id,
-                           "author": photo.author, "licence": stock.licence, "licence_url": stock.licence_url,
-                           "attribution_required": False, "attribution_text": stock.attribution(photo), "font": Path(s.font_path).name})
-            stock_hits += 1
-        else:
-            await asyncio.to_thread(media.render_card, sc["on_screen_text"], i, len(scenes), s.font_path, p)
-            # licence ledger (PRD D3): generated cards are ours; the font is the only third-party input
-            assets.append({"kind": "title_card", "scene_index": i, "order_index": i, "path": rel(s, p), "width": media.W, "height": media.H,
-                           "source_provider": "title_card", "licence": "generated", "attribution_required": False,
-                           "attribution_text": None, "font": Path(s.font_path).name})
+        stock_hits += bool(photo)
+        words = media.plain_words(sc["on_screen_text"])
+        for k, seg in enumerate(segs):
+            p = d / f"{len(assets):02}.png"
+            timing = {"scene_index": i, "order_index": len(assets), "start_ms": bounds[k], "end_ms": bounds[k + 1], "path": rel(s, p),
+                      "width": media.W, "height": media.H, "font": Path(s.font_path).name}
+            if photo:
+                await asyncio.to_thread(media.render_photo_card, photo.path, seg["text"], i, s.font_path, p, words)
+                assets.append({"kind": "stock_image", "source_provider": stock.name, "source_url": photo.source_url, "source_id": photo.source_id,
+                               "author": photo.author, "licence": stock.licence, "licence_url": stock.licence_url,
+                               "attribution_required": False, "attribution_text": stock.attribution(photo)} | timing)
+            else:
+                await asyncio.to_thread(media.render_card, seg["text"], i, s.font_path, p, words)
+                # licence ledger (PRD D3): generated cards are ours; the font is the only third-party input
+                assets.append({"kind": "title_card", "source_provider": "title_card", "licence": "generated", "attribution_required": False,
+                               "attribution_text": None} | timing)
     return {"assets": assets, "stock_hits": stock_hits, "_meta": {"provider": stock.name if stock else "title_card", "model": "pillow"}}
+
+
+def pick_music(s: Settings, job_id: str) -> Path | None:
+    """A background track from MUSIC_DIR, the same one on every re-render of a job; None when the folder is empty.
+    Putting a track there is your statement that you may use it: only royalty-free or licensed music."""
+    files = sorted(p for p in s.music_dir.glob("*") if p.suffix.lower() in MUSIC_EXT) if s.music_dir.is_dir() else []
+    return files[int(hashlib.sha256(job_id.encode()).hexdigest(), 16) % len(files)] if files else None
 
 
 async def stage_subtitles(ctx: dict) -> dict:
@@ -247,12 +268,13 @@ async def stage_subtitles(ctx: dict) -> dict:
 async def stage_render(ctx: dict) -> dict:
     s, up = ctx["settings"], ctx["up"]
     cards = [s.storage_dir / a["path"] for a in up["VISUALS"]["assets"]]
-    durs = [(x["end_ms"] - x["start_ms"]) / 1000 for x in up["VOICE"]["scenes"]]
+    durs = [(a["end_ms"] - a["start_ms"]) / 1000 for a in up["VISUALS"]["assets"]]
     d = ctx["dir"] / "render"
     out, thumb = d / "final.mp4", d / "thumb.jpg"
     burn = ctx["job"].burn_subtitles
+    music = pick_music(s, ctx["job"].id)
     cmd = await asyncio.to_thread(media.render_video, s.ffmpeg_path, cards, durs, s.storage_dir / up["VOICE"]["audio_path"], out,
-                                  s.storage_dir / up["SUBTITLES"]["srt_path"] if burn else None, s.font_path if burn else None)
+                                  s.storage_dir / up["SUBTITLES"]["srt_path"] if burn else None, s.font_path if burn else None, music)
     from PIL import Image
     Image.open(cards[0]).convert("RGB").save(thumb, quality=88)
     info = media.probe(s.ffprobe_path, out)
@@ -261,7 +283,8 @@ async def stage_render(ctx: dict) -> dict:
     return {"video_path": rel(s, out), "thumbnail_path": rel(s, thumb), "container": "mp4",
             "video_codec": v.get("codec_name"), "audio_codec": a.get("codec_name"), "width": v.get("width"), "height": v.get("height"),
             "fps": v.get("r_frame_rate"), "duration_s": round(float(info["format"]["duration"]), 3), "bytes": int(info["format"]["size"]),
-            "subtitles_burned": burn, "ffmpeg_command": " ".join(cmd), "_meta": {"provider": "ffmpeg"}}
+            "subtitles_burned": burn, "music_track": music.name if music else None, "ffmpeg_command": " ".join(cmd),
+            "_meta": {"provider": "ffmpeg"}}
 
 
 async def stage_quality(ctx: dict) -> dict:
@@ -532,6 +555,7 @@ def export(db: Session, s: Settings, job_id: str) -> dict:
         "title": sc["title"], "caption": sc["caption"], "hashtags": sc["hashtags"],
         "video": {k: out["RENDER"][k] for k in ("width", "height", "duration_s", "video_codec", "audio_codec", "fps", "bytes")},
         "assets": out["VISUALS"]["assets"],
+        "music": {"file": out["RENDER"]["music_track"], "licence": "owned"} if out["RENDER"].get("music_track") else None,
         "quality_checks": out["QUALITY"]["checks"],
         "approval": {"id": apr.id, "approved_by": apr.approved_by, "notes": apr.notes, "at": apr.created_at},
         "stages": [{"stage": n, "run_id": r.id, "provider": r.provider, "model": r.model, "cost_usd": r.cost_usd, "duration_ms": r.duration_ms} for n, r in runs.items()],

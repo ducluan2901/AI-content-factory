@@ -297,6 +297,23 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
             db.commit()
             return trend_out(t)
 
+    @app.post("/trends/import/google", status_code=201)
+    def import_google_trends(geo: str = "VN"):
+        """Today's Google Daily Search Trends for a country into the radar; titles already imported are skipped."""
+        try:
+            rows = planner.fetch_google_trends(geo)
+        except ValueError as e:
+            raise HTTPException(502, str(e))
+        with sm() as db:
+            have = set(db.scalars(select(Trend.title).where(Trend.source == "google_trends")))
+            new = [Trend(**r, market="vn" if geo == "VN" else "global", language="vi" if geo == "VN" else "en")
+                   for r in rows if r["title"] and r["title"] not in have]
+            for t in new:
+                planner.rescore(t)
+            db.add_all(new)
+            db.commit()
+            return {"fetched": len(rows), "added": len(new)}
+
     @app.get("/trends/{trend_id}")
     def get_trend(trend_id: str):
         with sm() as db:

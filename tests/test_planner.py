@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import Settings
 from app.db import Trend, make_sessionmaker
 from app.main import create_app
+from app import planner
 from app.planner import FORMATS, WEIGHTS, default_duration, trend_score
 from app.providers import FixtureLLM, FixtureTTS
 
@@ -139,3 +140,25 @@ def test_ui_local_time_is_vietnam_time():
     assert local("2026-10-31T01:00:00.000+00:00") == "2026-10-31 08:00"
     assert local("2026-10-31T23:30:00+00:00", minutes=False) == "2026-11-01"  # crosses midnight in Vietnam
     assert local(None) == ""
+
+
+RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:ht="https://trends.google.com/trending/rss" version="2.0"><channel>
+<item><title>augsburg đấu với freiburg</title><ht:approx_traffic>200+</ht:approx_traffic><description/>
+<ht:news_item><ht:news_item_title>Nhận định Augsburg vs Freiburg</ht:news_item_title><ht:news_item_url>https://x.vn/a</ht:news_item_url></ht:news_item></item>
+<item><title>giá vàng hôm nay</title><ht:approx_traffic>20.000+</ht:approx_traffic></item>
+</channel></rss>"""
+
+
+def test_google_trends_feed_becomes_estimated_rows_and_imports_once(client, monkeypatch):
+    rows = planner.parse_google_trends(RSS)
+    assert [r["title"] for r in rows] == ["augsburg đấu với freiburg", "giá vàng hôm nay"]
+    assert rows[0]["summary"] == "Nhận định Augsburg vs Freiburg" and rows[0]["source_url"] == "https://x.vn/a" and rows[0]["velocity"] == 46.0
+    assert rows[1]["velocity"] == 86.0 and rows[1]["summary"] is None
+    monkeypatch.setattr(planner, "fetch_google_trends", lambda geo: rows)
+    assert client.post("/trends/import/google").json() == {"fetched": 2, "added": 2}
+    assert client.post("/trends/import/google").json() == {"fetched": 2, "added": 0}  # same day again: nothing doubled
+    got = [t for t in client.get("/trends").json() if t["source"] == "google_trends"]
+    assert len(got) == 2 and all(t["is_estimated"] and t["market"] == "vn" and t["language"] == "vi" for t in got)
+    monkeypatch.setattr(planner, "fetch_google_trends", lambda geo: (_ for _ in ()).throw(ValueError("down")))
+    assert client.post("/trends/import/google").status_code == 502

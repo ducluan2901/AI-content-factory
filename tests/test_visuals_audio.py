@@ -58,7 +58,7 @@ def test_render_photo_card_is_vertical_and_readable(tmp_path):
     photo = tmp_path / "src.jpg"
     Image.new("RGB", (2000, 1200), (10, 80, 10)).save(photo)  # landscape source, must crop to 9:16
     out = tmp_path / "card.png"
-    media.render_photo_card(photo, "Một tiêu đề khá dài để kiểm tra xuống dòng", 0, 3, r"C:\Windows\Fonts\segoeuib.ttf", out)
+    media.render_photo_card(photo, "Một tiêu đề khá dài để kiểm tra xuống dòng", 0, r"C:\Windows\Fonts\segoeuib.ttf", out)
     assert Image.open(out).size == (media.W, media.H)
 
 
@@ -67,7 +67,7 @@ def test_ken_burns_render_keeps_exact_total_duration(tmp_path):
     cards = []
     for i in range(3):
         p = tmp_path / f"c{i}.png"
-        media.render_card(f"scene {i}", i, 3, r"C:\Windows\Fonts\segoeuib.ttf", p)
+        media.render_card(f"scene {i}", i, r"C:\Windows\Fonts\segoeuib.ttf", p)
         cards.append(p)
     audio = tmp_path / "silent.wav"
     subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "6.4", str(audio)], check=True)
@@ -336,3 +336,61 @@ def test_every_scene_card_appears_at_its_own_time(tmp_path):
         subprocess.run([FFMPEG, "-y", "-v", "error", "-i", str(out), "-ss", str(t), "-frames:v", "1", str(png)], check=True)
         r, g, b = Image.open(png).convert("RGB").getpixel((media.W // 2, media.H // 2))
         assert [r, g, b].index(max(r, g, b)) == expected and max(r, g, b) > 200, (t, expected, (r, g, b))
+
+
+class TwoSentenceTTS(FixtureTTS):
+    """Silent audio like FixtureTTS, but reports two sentence boundaries per scene, as edge-tts does for real text."""
+
+    async def synthesize(self, text, language, out, voice=None):
+        res = await super().synthesize(text, language, out, voice)
+        end = res.sentences[0]["end_ms"]
+        res.sentences = [{"text": "Câu một.", "start_ms": 0, "end_ms": end // 2}, {"text": "Câu hai.", "start_ms": end // 2, "end_ms": end}]
+        return res
+
+
+@needs_ffmpeg
+def test_one_card_per_sentence_timed_by_the_voice(tmp_path):
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=TwoSentenceTTS(s.ffmpeg_path), stock=None)
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+        assets, scenes = d["outputs"]["VISUALS"]["assets"], d["outputs"]["VOICE"]["scenes"]
+        assert len(assets) == 2 * len(scenes)
+        for sp in scenes:
+            mine = [a for a in assets if a["scene_index"] == sp["scene_index"]]
+            assert mine[0]["start_ms"] == sp["start_ms"] and mine[-1]["end_ms"] == sp["end_ms"] and mine[0]["end_ms"] == mine[1]["start_ms"]
+        a0, a1 = (tmp_path / assets[0]["path"]).read_bytes(), (tmp_path / assets[1]["path"]).read_bytes()
+        assert a0 != a1  # the second card carries the second sentence
+        assert abs(d["outputs"]["RENDER"]["duration_s"] - d["outputs"]["VOICE"]["duration_s"]) <= 0.3
+
+
+def test_headline_words_are_drawn_in_colour(tmp_path):
+    font = r"C:\Windows\Fonts\segoeuib.ttf"
+    plain, lit = tmp_path / "plain.png", tmp_path / "lit.png"
+    media.render_card("Bố giữ remote, bố là luật", 0, font, plain)
+    media.render_card("Bố giữ remote, bố là luật", 0, font, lit, media.plain_words("Bố là luật!"))
+    count = lambda p: sum(1 for px in Image.open(p).convert("RGB").getdata() if px == media.HIGHLIGHT)
+    assert count(lit) > count(plain) + 5000
+
+
+@needs_ffmpeg
+def test_music_is_mixed_under_the_voice_and_keeps_the_length(tmp_path):
+    card = tmp_path / "c.png"
+    Image.new("RGB", (media.W, media.H), (0, 0, 255)).save(card)
+    voice, music, out = tmp_path / "voice.wav", tmp_path / "music.wav", tmp_path / "final.mp4"
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "3", str(voice)], check=True)
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", str(music)], check=True)
+    media.render_video(FFMPEG, [card], [3.0], voice, out, music=music)  # a 1 s track must loop under 3 s of voice
+    assert abs(float(media.probe(FFPROBE, out)["format"]["duration"]) - 3.0) < 0.1
+    det = subprocess.run([FFMPEG, "-i", str(out), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+    mean = float(det.split("mean_volume:")[1].split("dB")[0])
+    assert -50 < mean < -10, mean  # silent voice + a full-scale sine at MUSIC_GAIN_DB fading out: audible, well under full scale
+
+
+def test_hashtags_become_lowercase_ascii():
+    from app.pipeline import ScriptOut
+    sc = ScriptOut(title="title", caption="cap", hashtags=["#Hài Hước", "điều hoà", "#AI2026"],
+                   scenes=[{"narration": "câu một dài", "on_screen_text": "a"}, {"narration": "câu hai dài", "on_screen_text": "b"}])
+    assert sc.hashtags == ["#haihuoc", "#dieuhoa", "#ai2026"]
