@@ -70,6 +70,17 @@ def risky_terms(texts: list[str]) -> list[str]:
     return sorted({t for t in terms if t in blob})
 
 
+# First-person experience and before/after wording. A gadget script may only say this if the operator really did it,
+# so a hit is a warning to confirm, never a block. Found in a real trial: the model narrated a planned 3-night test as done.
+EXPERIENCE_MARKERS = ("mình đã thử", "mình thử", "tôi đã thử", "tôi thử", "mình đã dùng", "tôi đã dùng", "mình dùng thấy", "tôi dùng thấy",
+                      "dùng thử", "mình test", "trước và sau", "i tried", "i tested", "i used", "before and after")
+
+
+def experience_claims(texts: list[str]) -> list[str]:
+    blob = "\n".join(texts).lower()
+    return sorted(m for m in EXPERIENCE_MARKERS if m in blob)
+
+
 def script_texts(sc: dict) -> list[str]:
     return [sc["title"], sc["caption"]] + [x for s in sc["scenes"] for x in (s["narration"], s["on_screen_text"])]
 
@@ -106,6 +117,9 @@ def script_checks(script: ScriptOut, job: ContentJob, est_s: float) -> list[dict
           "Gadget scripts must come from given product facts, never invented ones."),
         c("safety_terms", not (hits := risky_terms([script.title, script.caption] + [x for s in script.scenes for x in (s.narration, s.on_screen_text)])),
           "no risky claim terms", ", ".join(hits) or "none", "No wording from the risky-claims list (app/safety_terms.txt)."),
+        c("experience_claims", job.format != "gadget" or not (exp := experience_claims([x for s in script.scenes for x in (s.narration, s.on_screen_text)] + [script.caption])),
+          "no experience or before/after claims", ", ".join(exp) if job.format == "gadget" and exp else "none",
+          "A gadget script must not narrate a test or result the operator has not actually done and told us about."),
         c("numbers_to_verify", not digits, "no figures", f"{len(digits)} scene(s) with figures", "Every number in the narration must be verified before approval."),
     ]
 

@@ -41,10 +41,10 @@ IDEAS = [
     (0, "Mẹ Việt và cái điều hoà 26 độ", "Cuộc chiến nút điều hoà", "Nhà có hai phe, một cái remote", "Con chỉnh 20, mẹ chỉnh 26, bố giấu remote.", None),
     (0, "Vì sao mèo sợ dưa chuột", "Mèo và quả dưa chuột: sự thật", "Không phải vì dưa chuột đâu", "Giải thích phản xạ giật mình và vì sao không nên thử với mèo nhà.", None),
     (0, "Lá thư trong chai trôi 30 năm", "Lá thư trôi 30 năm", "Người gửi đã quên, người nhận thì không", "Kể lại hành trình chiếc chai theo các mốc có nguồn.", None),
-    (1, "Đèn ngủ cảm biến tự tắt", "Đèn ngủ biết bạn đã ngủ", "Bạn ngủ, nó tắt", "Thử trong 3 đêm, quay cảnh trước và sau.", "Đèn ngủ cảm biến chuyển động, pin sạc, 3 mức sáng. Không nêu thông số ngoài mô tả này."),
-    (1, "Máy hút bụi mini cho bàn phím", "Bàn phím của bạn bẩn hơn bạn nghĩ", "Thứ này nằm dưới phím Enter", "Hút thử bàn phím dùng 2 năm, cho xem khay bụi.", "Máy hút bụi mini USB cho bàn phím và bàn làm việc."),
-    (1, "Bình giữ nhiệt hiện nhiệt độ", "Nắp bình hiện 72 độ", "Chạm nắp là biết nóng hay nguội", "Thử với trà, cà phê và nước đá.", "Bình giữ nhiệt có màn hình nhiệt độ trên nắp."),
-    (1, "Ghế gấp bỏ túi", "Ghế trong túi quần", "Ngồi bất cứ đâu", "Mở ghế ở ba nơi bất ngờ.", "Ghế gấp nhỏ gọn, chịu tải theo mô tả của người bán; không tự bịa con số."),
+    (1, "Đèn ngủ cảm biến tự tắt", "Chiếc đèn ngủ nhỏ cho phòng ngủ", "Đèn ngủ này có gì khác?", "Kế hoạch quay (chưa quay): giới thiệu đèn và ba mức sáng. Chỉ dùng thông tin sản phẩm đã cho.", "Đèn ngủ cảm biến chuyển động, pin sạc, 3 mức sáng. Không nêu thông số ngoài mô tả này."),
+    (1, "Máy hút bụi mini cho bàn phím", "Máy hút bụi mini cho bàn phím", "Bàn phím của bạn có sạch không?", "Kế hoạch quay (chưa quay): giới thiệu máy hút bụi mini và cách cắm USB. Chỉ dùng thông tin sản phẩm đã cho.", "Máy hút bụi mini USB cho bàn phím và bàn làm việc."),
+    (1, "Bình giữ nhiệt hiện nhiệt độ", "Bình giữ nhiệt có màn hình nhiệt độ", "Bình này có màn hình trên nắp", "Kế hoạch quay (chưa quay): giới thiệu bình và màn hình trên nắp. Chỉ dùng thông tin sản phẩm đã cho.", "Bình giữ nhiệt có màn hình nhiệt độ trên nắp."),
+    (1, "Ghế gấp bỏ túi", "Ghế gấp nhỏ gọn", "Một chiếc ghế gấp nhỏ gọn", "Kế hoạch quay (chưa quay): giới thiệu ghế gấp. Chỉ dùng thông tin sản phẩm đã cho.", "Ghế gấp nhỏ gọn, chịu tải theo mô tả của người bán; không tự bịa con số."),
 ]
 
 
