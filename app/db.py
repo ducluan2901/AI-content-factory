@@ -6,8 +6,9 @@ the dedicated tables from DATABASE.md §4.3-4.14 arrive with the stages that nee
 import secrets
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, create_engine, event, select
+from sqlalchemy import CheckConstraint, ForeignKey, Index, UniqueConstraint, create_engine, event, inspect, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
@@ -24,16 +25,101 @@ class Base(DeclarativeBase):
     pass
 
 
+class Channel(Base):
+    """A distribution channel: one market, one language, one positioning (plan §2.1)."""
+
+    __tablename__ = "channel"
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("ch"))
+    tenant_id: Mapped[str] = mapped_column(default="local")
+    name: Mapped[str]
+    market: Mapped[str] = mapped_column(default="vn")  # vn | global
+    language: Mapped[str] = mapped_column(default="vi")  # vi | en
+    positioning: Mapped[str | None]
+    voice_id: Mapped[str | None]  # overrides the per-language TTS voice
+    handles_json: Mapped[str] = mapped_column(default="{}")  # {platform: handle}
+    status: Mapped[str] = mapped_column(default="active")  # active | paused
+    is_sample: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(default=now)
+    updated_at: Mapped[str] = mapped_column(default=now, onupdate=now)
+
+
+SCORE_COMPONENTS = ("velocity", "retention_potential", "channel_fit", "monetization_potential", "production_feasibility")
+
+
+class Trend(Base):
+    """Trend Radar entry. Components are 0-100 or NULL when unknown; the score is derived (plan §7.4)."""
+
+    __tablename__ = "trend"
+    __table_args__ = tuple(CheckConstraint(f"{c} IS NULL OR {c} BETWEEN 0 AND 100", name=f"{c}_range") for c in SCORE_COMPONENTS) + (
+        Index("ix_trend_status_score", "status", "trend_score"),
+    )
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("tr"))
+    tenant_id: Mapped[str] = mapped_column(default="local")
+    title: Mapped[str]
+    summary: Mapped[str | None]
+    source: Mapped[str] = mapped_column(default="manual")  # manual | sample | <site name>
+    source_url: Mapped[str | None]
+    observed_at: Mapped[str] = mapped_column(default=now)
+    market: Mapped[str] = mapped_column(default="vn")
+    language: Mapped[str] = mapped_column(default="vi")
+    format: Mapped[str] = mapped_column(default="facts")  # comedy | facts | gadget
+    velocity: Mapped[float | None]
+    retention_potential: Mapped[float | None]
+    channel_fit: Mapped[float | None]
+    monetization_potential: Mapped[float | None]
+    production_feasibility: Mapped[float | None]
+    trend_score: Mapped[float | None]
+    confidence: Mapped[float | None]  # 0-1, share of components actually provided
+    is_estimated: Mapped[bool] = mapped_column(default=True)
+    status: Mapped[str] = mapped_column(default="new")  # new | reviewed | selected | rejected
+    notes: Mapped[str | None]
+    is_sample: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(default=now)
+    updated_at: Mapped[str] = mapped_column(default=now, onupdate=now)
+
+
+class ContentIdea(Base):
+    """Content Planner entry: a concrete video idea for one channel, optionally born from a trend."""
+
+    __tablename__ = "content_idea"
+    __table_args__ = (
+        CheckConstraint("viral_score IS NULL OR viral_score BETWEEN 0 AND 100", name="viral_range"),
+        CheckConstraint("revenue_score IS NULL OR revenue_score BETWEEN 0 AND 100", name="revenue_range"),
+        CheckConstraint("target_duration_s BETWEEN 15 AND 90", name="idea_duration_window"),
+    )
+    id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("idea"))
+    tenant_id: Mapped[str] = mapped_column(default="local")
+    channel_id: Mapped[str] = mapped_column(ForeignKey("channel.id"))
+    trend_id: Mapped[str | None] = mapped_column(ForeignKey("trend.id"))
+    title: Mapped[str]
+    format: Mapped[str] = mapped_column(default="facts")
+    hook: Mapped[str | None]
+    premise: Mapped[str | None]
+    product_desc: Mapped[str | None]  # gadget format: what to feature, never invented specs
+    target_duration_s: Mapped[int] = mapped_column(default=35)
+    viral_score: Mapped[float | None]
+    revenue_score: Mapped[float | None]
+    status: Mapped[str] = mapped_column(default="backlog")  # backlog | selected | scripted | dropped
+    notes: Mapped[str | None]
+    is_sample: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[str] = mapped_column(default=now)
+    updated_at: Mapped[str] = mapped_column(default=now, onupdate=now)
+
+
 class ContentJob(Base):
     __tablename__ = "content_job"
     __table_args__ = (
         # the human-approval wall at the storage layer (PRD D1)
         CheckConstraint("status <> 'EXPORTED' OR approval_id IS NOT NULL", name="exported_requires_approval"),
-        CheckConstraint("target_duration_s BETWEEN 30 AND 90", name="duration_window"),
+        # 15 s floor: the 30-day plan targets 20-35 s entertainment clips (plan §4.2)
+        CheckConstraint("target_duration_s BETWEEN 15 AND 90", name="duration_window"),
         Index("ix_job_status_created", "status", "created_at"),
     )
     id: Mapped[str] = mapped_column(primary_key=True, default=lambda: new_id("job"))
     tenant_id: Mapped[str] = mapped_column(default="local")
+    channel_id: Mapped[str | None] = mapped_column(ForeignKey("channel.id"))
+    idea_id: Mapped[str | None] = mapped_column(ForeignKey("content_idea.id"))
+    format: Mapped[str] = mapped_column(default="facts")  # comedy | facts | gadget
     title: Mapped[str | None]
     input_kind: Mapped[str] = mapped_column(default="topic")
     input_topic: Mapped[str | None]
@@ -92,7 +178,30 @@ class Approval(Base):
     created_at: Mapped[str] = mapped_column(default=now)
 
 
-def make_sessionmaker(database_url: str) -> sessionmaker[Session]:
+def migrate(database_url: str) -> str:
+    """Bring the database to the latest Alembic revision (DATABASE.md §6). Returns the head revision id.
+
+    A database created by create_all before Alembic existed is stamped at head instead of re-created.
+    """
+    from alembic import command
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    root = Path(__file__).resolve().parent.parent
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", database_url)
+    engine = create_engine(database_url)
+    tables = inspect(engine).get_table_names()
+    engine.dispose()
+    if "content_job" in tables and "alembic_version" not in tables:
+        command.stamp(cfg, "head")
+    command.upgrade(cfg, "head")
+    return ScriptDirectory.from_config(cfg).get_current_head()
+
+
+def make_sessionmaker(database_url: str, create: bool = True) -> sessionmaker[Session]:
+    """Session factory. create=True builds the schema directly (tests, scripts); the app runs migrate() first instead."""
     engine = create_engine(database_url, connect_args={"check_same_thread": False})
 
     @event.listens_for(engine, "connect")
@@ -102,8 +211,8 @@ def make_sessionmaker(database_url: str) -> sessionmaker[Session]:
         cur.execute("PRAGMA foreign_keys=ON")
         cur.close()
 
-    # shortcut: create_all instead of Alembic; add Alembic with the first schema change (DATABASE.md §6)
-    Base.metadata.create_all(engine)
+    if create:
+        Base.metadata.create_all(engine)
     return sessionmaker(engine, expire_on_commit=False)
 
 

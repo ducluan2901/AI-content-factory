@@ -63,7 +63,13 @@ bind to localhost only, because the MVP has no authentication.
 To try the pipeline without an API key, set `LLM_PROVIDER=fixture` in `.env`. It replays a
 recorded Vietnamese script from `tests/fixtures/llm/` and still uses the real voice and render.
 
-Run the tests (offline, about 10 seconds, needs FFmpeg):
+Load the sample channels, trends and ideas (all flagged as samples; the scores are illustrative):
+
+```bash
+.\.venv\Scripts\python.exe scripts\seed_demo.py
+```
+
+Run the tests (offline, about 15 seconds, needs FFmpeg):
 
 ```bash
 .\.venv\Scripts\python.exe -m pytest -q
@@ -85,7 +91,10 @@ audit trail.
 | Title cards, FFmpeg render, SRT/VTT | `app/media.py` |
 | Stages, runner, orchestrator, approval gate, export | `app/pipeline.py` |
 | HTTP API and in-process worker | `app/main.py` |
-| Operator console | `ui/Home.py` |
+| Operator console (Video Studio) | `ui/Home.py` |
+| Trend Radar and Content Planner pages | `ui/pages/` |
+| Formats, TrendScore, idea → job | `app/planner.py` |
+| Alembic migrations | `migrations/`, run by `app.db.migrate()` at API start |
 
 Measured on this machine, 2026-10-31, demo topic, fixture script, real Vietnamese voice:
 
@@ -100,6 +109,24 @@ Measured on this machine, 2026-10-31, demo topic, fixture script, real Vietnames
 Not built yet, per the backlog: research, separate strategy/script/SEO agents, stock footage,
 loudness normalisation, and Alembic migrations. The `claude_cli` provider remains for trying
 prompts during development only, and refuses to start with `APP_ENV=prod`.
+
+## Sprint 1 of the 30-day plan: Trend Radar and Content Planner
+
+Three formats drive everything: `comedy` (20–35 s), `facts` (30–45 s) and `gadget` (25–40 s). A job gets
+the format's default length unless you set one; the quality gate judges the rendered length against that
+target ±20 %.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /formats` | the three formats and their windows |
+| `GET, POST /channels` | channels: market, language, positioning, handles |
+| `GET, POST /trends`, `GET, PATCH /trends/{id}` | trends with the five score components; the response includes the per-component breakdown |
+| `GET, POST /ideas`, `PATCH /ideas/{id}` | the idea backlog, filterable by status, channel and format |
+| `POST /ideas/{id}/jobs` | turn an idea into a video job; the job keeps `idea_id` and `channel_id` |
+
+TrendScore is `0.30 velocity + 0.25 retention + 0.20 channel fit + 0.15 monetization + 0.10 feasibility`,
+each 0–100. A component you leave empty counts as 50 and lowers `confidence`, and the trend is marked
+`is_estimated`. Nothing scores a trend automatically: there is no scraping and no LLM call in this sprint.
 
 ## Security and content rules
 

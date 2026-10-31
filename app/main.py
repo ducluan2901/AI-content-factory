@@ -10,17 +10,84 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app import pipeline
+from app import pipeline, planner
 from app.config import Settings
-from app.db import Approval, ContentJob, StageRun, make_sessionmaker, row_dict
+from app.db import SCORE_COMPONENTS, Approval, Channel, ContentIdea, ContentJob, StageRun, Trend, make_sessionmaker, migrate, row_dict
 from app.providers import build_llm, build_tts
+
+FORMAT_RE = "^(comedy|facts|gadget)$"
+Score = Field(default=None, ge=0, le=100)
 
 
 class JobIn(BaseModel):
     topic: str = Field(min_length=3, max_length=500)
     product_desc: str | None = Field(default=None, max_length=2000)
     language: str = Field(default="vi", pattern="^(vi|en)$")
-    target_duration_s: int = Field(default=55, ge=45, le=60)
+    format: str = Field(default="facts", pattern=FORMAT_RE)
+    channel_id: str | None = None
+    target_duration_s: int | None = Field(default=None, ge=15, le=90)  # None: the format's default
+
+
+class ChannelIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    market: str = Field(default="vn", pattern="^(vn|global)$")
+    language: str = Field(default="vi", pattern="^(vi|en)$")
+    positioning: str | None = Field(default=None, max_length=500)
+    voice_id: str | None = Field(default=None, max_length=100)
+    handles: dict[str, str] = {}
+
+
+class TrendIn(BaseModel):
+    title: str = Field(min_length=3, max_length=300)
+    summary: str | None = Field(default=None, max_length=2000)
+    source: str = Field(default="manual", max_length=100)
+    source_url: str | None = Field(default=None, max_length=1000)
+    observed_at: str | None = None
+    market: str = Field(default="vn", pattern="^(vn|global)$")
+    language: str = Field(default="vi", pattern="^(vi|en)$")
+    format: str = Field(default="facts", pattern=FORMAT_RE)
+    velocity: float | None = Score
+    retention_potential: float | None = Score
+    channel_fit: float | None = Score
+    monetization_potential: float | None = Score
+    production_feasibility: float | None = Score
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class TrendPatch(BaseModel):
+    status: str | None = Field(default=None, pattern="^(new|reviewed|selected|rejected)$")
+    velocity: float | None = Score
+    retention_potential: float | None = Score
+    channel_fit: float | None = Score
+    monetization_potential: float | None = Score
+    production_feasibility: float | None = Score
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class IdeaIn(BaseModel):
+    channel_id: str
+    trend_id: str | None = None
+    title: str = Field(min_length=3, max_length=300)
+    format: str = Field(default="facts", pattern=FORMAT_RE)
+    hook: str | None = Field(default=None, max_length=500)
+    premise: str | None = Field(default=None, max_length=2000)
+    product_desc: str | None = Field(default=None, max_length=2000)
+    target_duration_s: int | None = Field(default=None, ge=15, le=90)
+    viral_score: float | None = Score
+    revenue_score: float | None = Score
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class IdeaPatch(BaseModel):
+    title: str | None = Field(default=None, min_length=3, max_length=300)
+    status: str | None = Field(default=None, pattern="^(backlog|selected|scripted|dropped)$")
+    hook: str | None = Field(default=None, max_length=500)
+    premise: str | None = Field(default=None, max_length=2000)
+    product_desc: str | None = Field(default=None, max_length=2000)
+    target_duration_s: int | None = Field(default=None, ge=15, le=90)
+    viral_score: float | None = Score
+    revenue_score: float | None = Score
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class DecisionIn(BaseModel):
@@ -36,7 +103,9 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
     s = settings or Settings()
     s.check()
     s.storage_dir.mkdir(parents=True, exist_ok=True)
-    sm = make_sessionmaker(s.database_url)
+    if s.app_env != "test":  # tests build throwaway schemas directly; real databases go through Alembic
+        migrate(s.database_url)
+    sm = make_sessionmaker(s.database_url, create=s.app_env == "test")
     pipe = pipeline.Pipeline(s, sm, llm or build_llm(s), tts or build_tts(s))
     queue: asyncio.Queue[str] = asyncio.Queue()
 
@@ -76,14 +145,118 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
                   "anthropic_api_key": bool(s.anthropic_api_key and s.anthropic_api_key.get_secret_value()) if s.llm_provider == "anthropic_api" else "n/a"}
         return {"ok": all(checks.values()), "app_env": s.app_env, "llm_provider": s.llm_provider, "tts_provider": s.tts_provider, "checks": checks, "queue": queue.qsize()}
 
+    def get_or_404(db, model, id_: str):
+        row = db.get(model, id_)
+        if not row:
+            raise HTTPException(404, f"{model.__tablename__} not found")
+        return row
+
     @app.post("/jobs", status_code=201)
     async def create_job(body: JobIn):
         with sm() as db:
+            if body.channel_id:
+                get_or_404(db, Channel, body.channel_id)
             job = ContentJob(title=body.topic[:120], input_kind="product" if body.product_desc else "topic", input_topic=body.topic,
-                             input_product_desc=body.product_desc, language=body.language, target_duration_s=body.target_duration_s,
-                             profile=s.app_env, status="QUEUED")
+                             input_product_desc=body.product_desc, language=body.language, format=body.format, channel_id=body.channel_id,
+                             target_duration_s=body.target_duration_s or planner.default_duration(body.format), profile=s.app_env, status="QUEUED")
             db.add(job)
             db.commit()
+            await queue.put(job.id)
+            return row_dict(job)
+
+    # ---------------------------------------------------------------- channels, trends, ideas (Sprint 1)
+
+    @app.get("/formats")
+    def formats():
+        return {k: {"label": v["label"], "window": v["window"]} for k, v in planner.FORMATS.items()}
+
+    @app.get("/channels")
+    def list_channels():
+        with sm() as db:
+            return [row_dict(c) for c in db.scalars(select(Channel).order_by(Channel.created_at))]
+
+    @app.post("/channels", status_code=201)
+    def create_channel(body: ChannelIn):
+        with sm() as db:
+            ch = Channel(**body.model_dump(exclude={"handles"}), handles_json=json.dumps(body.handles))
+            db.add(ch)
+            db.commit()
+            return row_dict(ch)
+
+    def trend_out(t: Trend) -> dict:
+        return row_dict(t) | {"breakdown": planner.trend_score({c: getattr(t, c) for c in SCORE_COMPONENTS})["breakdown"]}
+
+    @app.get("/trends")
+    def list_trends(status: str | None = None, market: str | None = None, format: str | None = None, limit: int = 200):
+        stmt = select(Trend)
+        for col, val in ((Trend.status, status), (Trend.market, market), (Trend.format, format)):
+            if val:
+                stmt = stmt.where(col == val)
+        with sm() as db:
+            return [trend_out(t) for t in db.scalars(stmt.order_by(Trend.trend_score.desc().nullslast(), Trend.observed_at.desc()).limit(limit))]
+
+    @app.post("/trends", status_code=201)
+    def create_trend(body: TrendIn):
+        with sm() as db:
+            t = Trend(**body.model_dump(exclude_none=True))
+            planner.rescore(t)
+            db.add(t)
+            db.commit()
+            return trend_out(t)
+
+    @app.get("/trends/{trend_id}")
+    def get_trend(trend_id: str):
+        with sm() as db:
+            return trend_out(get_or_404(db, Trend, trend_id))
+
+    @app.patch("/trends/{trend_id}")
+    def patch_trend(trend_id: str, body: TrendPatch):
+        with sm() as db:
+            t = get_or_404(db, Trend, trend_id)
+            for k, v in body.model_dump(exclude_unset=True).items():
+                setattr(t, k, v)
+            planner.rescore(t)
+            db.commit()
+            return trend_out(t)
+
+    @app.get("/ideas")
+    def list_ideas(status: str | None = None, channel_id: str | None = None, format: str | None = None, limit: int = 200):
+        stmt = select(ContentIdea)
+        for col, val in ((ContentIdea.status, status), (ContentIdea.channel_id, channel_id), (ContentIdea.format, format)):
+            if val:
+                stmt = stmt.where(col == val)
+        with sm() as db:
+            return [row_dict(i) for i in db.scalars(stmt.order_by(ContentIdea.created_at.desc()).limit(limit))]
+
+    @app.post("/ideas", status_code=201)
+    def create_idea(body: IdeaIn):
+        with sm() as db:
+            get_or_404(db, Channel, body.channel_id)
+            if body.trend_id:
+                get_or_404(db, Trend, body.trend_id)
+            data = body.model_dump(exclude_none=True)
+            data.setdefault("target_duration_s", planner.default_duration(body.format))
+            idea = ContentIdea(**data)
+            db.add(idea)
+            db.commit()
+            return row_dict(idea)
+
+    @app.patch("/ideas/{idea_id}")
+    def patch_idea(idea_id: str, body: IdeaPatch):
+        with sm() as db:
+            idea = get_or_404(db, ContentIdea, idea_id)
+            for k, v in body.model_dump(exclude_unset=True).items():
+                setattr(idea, k, v)
+            db.commit()
+            return row_dict(idea)
+
+    @app.post("/ideas/{idea_id}/jobs", status_code=201)
+    async def job_from_idea(idea_id: str):
+        with sm() as db:
+            idea = get_or_404(db, ContentIdea, idea_id)
+            if idea.status == "dropped":
+                raise HTTPException(409, "idea is dropped")
+            job = planner.job_from_idea(db, idea, s.app_env)
             await queue.put(job.id)
             return row_dict(job)
 

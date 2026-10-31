@@ -17,11 +17,11 @@ from sqlalchemy.orm import Session, sessionmaker
 from app import media
 from app.config import ROOT, Settings
 from app.db import Approval, ContentJob, StageRun, latest_ok_run, now
+from app.planner import FORMATS
 from app.providers import ProviderError, extract_json
 
 LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
 SYLLABLES_PER_S = {"vi": 3.3, "en": 2.6}  # vi measured: 178 syllables in 53.9s on HoaiMyNeural; en unmeasured; PRD D4
-DURATION_WINDOW = (45.0, 60.0)
 
 
 class SchemaError(Exception):
@@ -59,13 +59,14 @@ async def stage_script(ctx: dict) -> dict:
     prompt = (ROOT / "app" / "prompts" / "script.md").read_text(encoding="utf-8").format(
         topic=job.input_topic,
         product_block=f"Product to feature: {job.input_product_desc}\n" if job.input_product_desc else "",
+        format_guide=FORMATS.get(job.format, FORMATS["facts"])["guide"],
         language_name=LANG_NAMES[job.language],
         duration=job.target_duration_s,
         syllables=int(job.target_duration_s * rate),
         rate=rate,
-        min_scenes=6,
-        max_scenes=9,
-        last_body="N-1",
+        # about one scene per 5-8 s of narration, never fewer than 3
+        min_scenes=max(3, job.target_duration_s // 8),
+        max_scenes=max(4, job.target_duration_s // 5),
     )
     log = {"prompt": prompt, "responses": []}
     log_path = ctx["dir"] / "_llm" / f"SCRIPT-{ctx['attempt']}.json"
@@ -158,14 +159,15 @@ async def stage_render(ctx: dict) -> dict:
 async def stage_quality(ctx: dict) -> dict:
     up = ctx["up"]
     r, sc, sub, vo = up["RENDER"], up["SCRIPT"], up["SUBTITLES"], up["VOICE"]
-    lo, hi = DURATION_WINDOW
+    # the format only sets the default target; the gate judges against the job's own target +-20%
+    lo, hi = round(ctx["job"].target_duration_s * 0.8), round(ctx["job"].target_duration_s * 1.2)
 
     def check(rule, severity, passed, expected, actual, message):
         return {"rule": rule, "severity": severity, "passed": bool(passed), "expected": str(expected), "actual": str(actual), "message": message}
 
     checks = [
         check("duration_window", "error", lo <= r["duration_s"] <= hi, f"{lo:.0f}-{hi:.0f}s", f"{r['duration_s']:.1f}s",
-              "Video length is inside the 45-60s window." if lo <= r["duration_s"] <= hi else "Video length is outside 45-60s: lengthen or shorten the script."),
+              f"Video length is inside the {lo}-{hi}s window." if lo <= r["duration_s"] <= hi else f"Video length is outside {lo}-{hi}s: lengthen or shorten the script."),
         check("aspect_ratio", "error", (r["width"], r["height"]) == (1080, 1920), "1080x1920", f"{r['width']}x{r['height']}", "Vertical 9:16 resolution."),
         check("codecs", "error", (r["video_codec"], r["audio_codec"]) == ("h264", "aac"), "h264/aac", f"{r['video_codec']}/{r['audio_codec']}", "Platform-safe codecs."),
         check("audio_present", "error", r["audio_codec"] is not None and vo["duration_s"] > 1, "voice-over", f"{vo['duration_s']}s", "Voice-over is present."),
