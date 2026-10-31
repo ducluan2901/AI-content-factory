@@ -99,6 +99,8 @@ def test_regenerate_feeds_notes_and_previous_draft(env):
     assert "Hook mạnh hơn, bỏ số liệu năm" in llm.prompts[-1] and "Previous draft (JSON)" in llm.prompts[-1]
     assert [a["decision"] for a in d["approvals"]] == ["script_rejected"]
     assert len([x for x in d["runs"] if x["stage"] == "SCRIPT"]) == 2
+    job = c.post(f"/jobs/{job_id}/script/approve", json={"approved_by": "founder"}).json()
+    assert job["operator_notes"] is None  # settled feedback must not steer later drafts
 
 
 def test_batch_jobs_from_ideas(env):

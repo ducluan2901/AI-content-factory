@@ -301,9 +301,10 @@ def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
     @app.post("/jobs/{job_id}/approve")
     def approve(job_id: str, body: DecisionIn):
         with sm() as db:
-            get_job(db, job_id)
+            job = get_job(db, job_id)
             try:
-                pipeline.decide(db, job_id, "approved", body.approved_by, body.notes)
+                if job.status != "APPROVED":  # APPROVED here means an earlier export failed: retry only the export
+                    pipeline.decide(db, job_id, "approved", body.approved_by, body.notes)
                 bundle = pipeline.export(db, s, job_id)
             except pipeline.GateError as e:
                 raise HTTPException(409, str(e))

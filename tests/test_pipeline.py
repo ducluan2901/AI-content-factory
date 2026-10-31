@@ -179,3 +179,38 @@ def test_anthropic_provider_needs_a_key():
     from app.providers import build_llm
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
         build_llm(Settings(_env_file=None, llm_provider="anthropic_api", anthropic_api_key=""))
+
+
+@needs_ffmpeg
+def test_channel_voice_rerun_gate_and_export_retry(tmp_path):
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path))
+    with TestClient(app) as c:
+        ch = c.post("/channels", json={"name": "B", "voice_id": "vi-VN-NamMinhNeural"}).json()["id"]
+        job_id = c.post("/jobs", json={"topic": "Mèo", "channel_id": ch, "target_duration_s": 55}).json()["id"]
+        assert run_to_rest(c, job_id)["job"]["status"] == "SCRIPT_REVIEW"
+        c.post(f"/jobs/{job_id}/script/approve", json={"approved_by": "founder"})
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+        assert next(r for r in d["runs"] if r["stage"] == "VOICE")["model"] == "vi-VN-NamMinhNeural"  # channel voice wins
+
+        # re-running from SCRIPT must pass the script gate again
+        assert c.post(f"/jobs/{job_id}/reject", json={"approved_by": "founder", "notes": "new angle"}).status_code == 200
+        assert c.post(f"/jobs/{job_id}/run", json={"from_stage": "SCRIPT"}).status_code == 200
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "SCRIPT_REVIEW" and set(d["outputs"]) == {"SCRIPT"}
+        c.post(f"/jobs/{job_id}/script/approve", json={"approved_by": "founder"})
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "AWAITING_APPROVAL"
+
+        # a failed export leaves the job APPROVED; the next approve retries only the export
+        video = tmp_path / d["outputs"]["RENDER"]["video_path"]
+        hidden = video.with_suffix(".bak")
+        video.rename(hidden)
+        with pytest.raises(FileNotFoundError):
+            c.post(f"/jobs/{job_id}/approve", json={"approved_by": "founder"})
+        assert c.get(f"/jobs/{job_id}").json()["job"]["status"] == "APPROVED"
+        hidden.rename(video)
+        r = c.post(f"/jobs/{job_id}/approve", json={"approved_by": "founder"})
+        assert r.status_code == 200 and r.json()["job"]["status"] == "EXPORTED"
+        assert [a["decision"] for a in c.get(f"/jobs/{job_id}").json()["approvals"]].count("approved") == 1

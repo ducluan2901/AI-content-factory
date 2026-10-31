@@ -156,7 +156,7 @@ class EdgeTTS:
     def __init__(self, voices: dict[str, str]):
         self.voices = voices
 
-    async def synthesize(self, text: str, language: str, out: Path) -> TTSResult:
+    async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
         import edge_tts
 
         last: Exception | None = None
@@ -164,7 +164,7 @@ class EdgeTTS:
         for attempt in range(5):
             sentences = []
             try:
-                comm = edge_tts.Communicate(text, self.voices[language], boundary="SentenceBoundary")
+                comm = edge_tts.Communicate(text, voice or self.voices[language], boundary="SentenceBoundary")
                 with out.open("wb") as f:
                     async for chunk in comm.stream():
                         if chunk["type"] == "audio":
@@ -187,7 +187,7 @@ class FixtureTTS:
     def __init__(self, ffmpeg: str):
         self.ffmpeg = ffmpeg
 
-    async def synthesize(self, text: str, language: str, out: Path) -> TTSResult:
+    async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
         dur = max(1.0, len(text.split()) / 3.0)
         cmd = [self.ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", f"{dur:.2f}", "-c:a", "libmp3lame", str(out)]
         await asyncio.to_thread(subprocess.run, cmd, check=True)
