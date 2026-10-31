@@ -13,6 +13,7 @@ dependencies = [
   "streamlit",
   "httpx",
   "anthropic>=2.3",
+  "alembic",
   "python-multipart",
 ]
 

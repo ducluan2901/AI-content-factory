@@ -42,12 +42,12 @@ def test_happy_path_requires_approval_then_exports(tmp_path):
     s = settings(tmp_path)
     app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path))
     with TestClient(app) as c:
-        job_id = c.post("/jobs", json={"topic": "Tại sao AI agent sẽ thay đổi cách làm việc năm 2026"}).json()["id"]
+        job_id = c.post("/jobs", json={"topic": "Tại sao AI agent sẽ thay đổi cách làm việc năm 2026", "target_duration_s": 55}).json()["id"]
         d = run_to_rest(c, job_id)
         assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
         r = d["outputs"]["RENDER"]
         assert (r["width"], r["height"], r["video_codec"], r["audio_codec"]) == (1080, 1920, "h264", "aac")
-        assert 45 <= r["duration_s"] <= 60
+        assert 44 <= r["duration_s"] <= 66  # target 55 s +-20%
         srt = (tmp_path / d["outputs"]["SUBTITLES"]["srt_path"]).read_text(encoding="utf-8")
         assert "AI agent" in srt and "đồng nghiệp" in srt  # diacritics survive the round trip
 

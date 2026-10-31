@@ -220,3 +220,23 @@ part of week-1 item 1.2.
 4. **The five open questions in PRD §10.**
 
 On approval, work starts at Week 1 item 1.1 and nothing is built ahead of the plan.
+
+---
+
+## Part F — Mapping to the 30-day plan (added 2026-10-31)
+
+`AI_Viral_Media_Network_30_Day_Plan.md` supersedes the week plan above where they differ. The pipeline,
+the approval wall and the risk list stay; the niche, the video length and the order of work change.
+
+| Plan sprint | Days | Covers | Relation to Parts A–B |
+|---|---|---|---|
+| 1 | 1–3 | channels, Trend Radar, Content Planner, TrendScore, dashboards 1–2 | new; **done** on branch `sprint-1-trend-planner` |
+| 2 | 4–7 | Script agent per format, prompt templates | replaces W2 2.3–2.4; research (W2 2.1–2.2) only for the `facts` format |
+| 3 | 8–12 | TTS, image, video renderer | W1 spine exists; adds an image provider decision (PRD Q2) |
+| 4 | 13–17 | QC, subtitles, Video Studio | W3 3.3–3.6 |
+| 5 | 18–23 | publishing, analytics | **manual** upload and manual metric entry; platform APIs need app review (D.3) |
+| 6 | 24–30 | affiliate, revenue dashboard | new tables from plan §8 |
+
+Changed decisions: three formats (`comedy`, `facts`, `gadget`) instead of the AI & Technology niche;
+format-specific default lengths (27 / 37 / 32 s) instead of 45–60 s; the quality gate judges length against
+the job's own target ±20 %. Trend data is entered by hand with a source URL; no platform scraping.

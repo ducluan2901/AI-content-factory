@@ -90,7 +90,10 @@ FAILED   → QUEUED | CANCELLED
 | `input_product_desc` | TEXT | raw operator input (business product mode) |
 | `language` | TEXT NOT NULL | `vi` \| `en` |
 | `target_platforms` | TEXT NOT NULL | JSON array of `platform` |
-| `target_duration_s` | INTEGER NOT NULL DEFAULT 55 | 45–60 window, CHECK 30..90 |
+| `target_duration_s` | INTEGER NOT NULL | default from the format (plan §4.2), CHECK 15..90 |
+| `channel_id` | TEXT FK → channel.id | null for jobs submitted without a channel |
+| `idea_id` | TEXT FK → content_idea.id | the planner entry this job came from |
+| `format` | TEXT NOT NULL DEFAULT `'facts'` | `comedy` \| `facts` \| `gadget` |
 | `status` | TEXT NOT NULL | `job_status` |
 | `current_stage` | TEXT | `stage_name`, null when idle |
 | `profile` | TEXT NOT NULL | provider profile used: `dev` \| `prod` \| `test` |
@@ -103,7 +106,7 @@ FAILED   → QUEUED | CANCELLED
 Constraints:
 - `CHECK (status <> 'EXPORTED' OR approval_id IS NOT NULL)` — **the human-approval wall at
   the storage layer.** PRD D1 / ARCHITECTURE §8.
-- `CHECK (target_duration_s BETWEEN 30 AND 90)`
+- `CHECK (target_duration_s BETWEEN 15 AND 90)` — widened from 30 in Sprint 1, since the 30-day plan targets 20–35 s entertainment clips
 - Indexes: `(status, created_at DESC)`, `(tenant_id, created_at DESC)`.
 
 ### 4.2 `stage_run` — the audit trail (append-only)
@@ -276,6 +279,36 @@ Exists separately from `stage_run.cost_usd` because one stage can make several p
 `stage_run` stores `prompt_version_id`. When output quality changes between two jobs, the
 first question is which prompt ran — this answers it without git archaeology.
 
+### 4.16 `channel` — Sprint 1 (30-day plan §2.1)
+
+`id` (`ch_…`), `tenant_id`, `name`, `market` (`vn` | `global`), `language`, `positioning`, `voice_id` (overrides
+the per-language TTS voice), `handles_json` (`{platform: handle}`), `status` (`active` | `paused`), `is_sample`,
+`created_at`, `updated_at`.
+
+### 4.17 `trend` — Trend Radar (30-day plan §7.4)
+
+`id` (`tr_…`), `tenant_id`, `title`, `summary`, `source` (`manual` | `sample` | site name), `source_url`,
+`observed_at`, `market`, `language`, `format`, the five score components `velocity`,
+`retention_potential`, `channel_fit`, `monetization_potential`, `production_feasibility` (REAL, NULL when
+unknown, `CHECK 0..100` each), `trend_score` (derived), `confidence` (0–1, the weight share of components
+actually provided), `is_estimated`, `status` (`new` | `reviewed` | `selected` | `rejected`), `notes`,
+`is_sample`, timestamps. Index `(status, trend_score)`.
+
+The score is recomputed by the service on every write, never by hand: a missing component counts as neutral
+50 and lowers `confidence`, so an incomplete trend can never outrank a measured one by accident. Sample rows
+(`is_sample = 1`, `source = 'sample'`) are illustrative and the UI labels them as such.
+
+### 4.18 `content_idea` — Content Planner
+
+`id` (`idea_…`), `tenant_id`, `channel_id` FK, `trend_id` FK (nullable), `title`, `format`, `hook`,
+`premise`, `product_desc` (gadget format: the only product facts the script may use), `target_duration_s`
+(`CHECK 15..90`, default from the format), `viral_score`, `revenue_score` (`CHECK 0..100`), `status`
+(`backlog` | `selected` | `scripted` | `dropped`), `notes`, `is_sample`, timestamps.
+
+Creating a job from an idea copies the channel's language and the idea's format, duration and product facts
+onto the job, sets the idea to `scripted`, and moves a `new`/`reviewed` trend to `selected`. That is the
+traceability chain the plan asks for: trend → idea → job → video.
+
 ## 5. Filesystem layout (mirrors the DB)
 
 ```
@@ -299,6 +332,10 @@ filename under a UUID directory gets close to it (ARCHITECTURE.md §11).
 Alembic from the first commit, even on SQLite, even solo. SQLite cannot drop or alter a
 column, so an ad-hoc schema becomes unmigratable data within a week. Every schema change is a
 revision; `alembic upgrade head` runs on app start in `dev`.
+
+In code: `app.db.migrate()` runs at API startup for every profile except `test`. A database that the
+week-1 code created with `create_all` is stamped at the baseline revision instead of re-created. Tests build
+throwaway schemas directly. New revision: `.\.venv\Scriptslembic.exe revision --autogenerate -m "..."`.
 
 ## 7. Retention
 

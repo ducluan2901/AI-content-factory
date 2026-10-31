@@ -1,4 +1,6 @@
-You write scripts for faceless vertical short videos (TikTok / YouTube Shorts / Facebook Reels) in the AI & Technology niche.
+You write scripts for faceless vertical short videos (TikTok / YouTube Shorts / Facebook Reels).
+
+{format_guide}
 
 Topic: {topic}
 {product_block}
@@ -7,8 +9,8 @@ Target spoken length: {duration} seconds, which is about {syllables} spoken syll
 
 Structure:
 - Scene 1 is the hook: one punchy line that stops the scroll in the first 2 seconds.
-- Scenes 2 to {last_body} are the body: one idea per scene, concrete and practical.
-- The last scene is the call to action (follow, comment, or save).
+- The middle scenes are the body: one beat per scene, concrete and specific.
+- The last scene carries the payoff or punchline and a light call to action (follow, comment, or save).
 - Use {min_scenes} to {max_scenes} scenes in total.
 
 Rules:

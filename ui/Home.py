@@ -24,12 +24,16 @@ st.title("AI Content Factory")
 
 with st.sidebar:
     st.subheader("New video")
+    formats = api("GET", "/formats").json()
+    channels = api("GET", "/channels").json()
     with st.form("new"):
-        topic = st.text_area("Topic", "Tại sao AI agent sẽ thay đổi cách làm việc năm 2026")
-        product = st.text_area("Product description (optional)", "")
+        topic = st.text_area("Topic", "Vì sao mèo sợ dưa chuột")
+        fmt = st.selectbox("Format", list(formats), format_func=lambda k: formats[k]["label"])
+        ch = st.selectbox("Channel", [None] + [c["id"] for c in channels], format_func=lambda i: "no channel" if i is None else next(c["name"] for c in channels if c["id"] == i))
+        product = st.text_area("Product facts (gadget format)", "")
         lang = st.selectbox("Language", ["vi", "en"])
-        dur = st.slider("Target length (s)", 45, 60, 55)
-        if st.form_submit_button("Submit") and (r := api("POST", "/jobs", json={"topic": topic, "product_desc": product or None, "language": lang, "target_duration_s": dur})):
+        dur = st.number_input("Target length (s), 0 = format default", 0, 90, 0)
+        if st.form_submit_button("Submit") and (r := api("POST", "/jobs", json={"topic": topic, "product_desc": product or None, "language": lang, "format": fmt, "channel_id": ch, "target_duration_s": dur or None})):
             st.session_state.job = r.json()["id"]
             st.success("Queued")
     health = api("GET", "/health").json()
