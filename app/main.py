@@ -13,7 +13,7 @@ from sqlalchemy import select
 from app import pipeline, planner
 from app.config import Settings
 from app.db import SCORE_COMPONENTS, Approval, Channel, ContentIdea, ContentJob, StageRun, Trend, make_sessionmaker, migrate, row_dict
-from app.providers import build_llm, build_tts
+from app.providers import build_llm, build_stock, build_tts
 
 FORMAT_RE = "^(comedy|facts|gadget)$"
 Score = Field(default=None, ge=0, le=100)
@@ -114,14 +114,14 @@ class BatchIn(BaseModel):
     idea_ids: list[str] = Field(min_length=1, max_length=20)
 
 
-def create_app(settings: Settings | None = None, llm=None, tts=None) -> FastAPI:
+def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None) -> FastAPI:
     s = settings or Settings()
     s.check()
     s.storage_dir.mkdir(parents=True, exist_ok=True)
     if s.app_env != "test":  # tests build throwaway schemas directly; real databases go through Alembic
         migrate(s.database_url)
     sm = make_sessionmaker(s.database_url, create=s.app_env == "test")
-    pipe = pipeline.Pipeline(s, sm, llm or build_llm(s), tts or build_tts(s))
+    pipe = pipeline.Pipeline(s, sm, llm or build_llm(s), tts or build_tts(s), stock if stock is not None else build_stock(s))
     queue: asyncio.Queue[str] = asyncio.Queue()
 
     async def worker():

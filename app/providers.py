@@ -1,12 +1,18 @@
 """Provider ports and adapters. Business code depends on these classes, never on a vendor SDK."""
 import asyncio
+import hashlib
 import json
+import logging
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx
+
 from app.config import Settings
+
+log = logging.getLogger(__name__)
 
 
 class ProviderError(Exception):
@@ -204,6 +210,82 @@ def build_llm(s: Settings):
     if s.llm_provider == "fixture":
         return FixtureLLM(s.fixture_dir / "llm" / "script_vi.json")
     raise ValueError(f"unknown LLM_PROVIDER {s.llm_provider}")
+
+
+@dataclass
+class StockPhoto:
+    path: Path
+    source_id: str
+    source_url: str
+    author: str
+    author_url: str | None = None
+
+
+class PexelsProvider:
+    """Free stock photos, one per scene, searched by the scene's own visual_query (BACKLOG 3.1).
+    Never raises for "no result" or a transient problem - the caller falls back to a title card (BACKLOG R4)."""
+
+    name = "pexels"
+    licence = "pexels"
+    licence_url = "https://www.pexels.com/license/"
+
+    def __init__(self, api_key: str, cache_dir: Path, client: httpx.AsyncClient | None = None):
+        self.api_key, self.cache_dir = api_key, cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.client = client or httpx.AsyncClient(base_url="https://api.pexels.com/v1", timeout=15)
+
+    async def search_photo(self, query: str) -> StockPhoto | None:
+        try:
+            resp = await self.client.get("/search", headers={"Authorization": self.api_key},
+                                         params={"query": query, "per_page": 1, "orientation": "portrait"})
+            resp.raise_for_status()
+            photos = resp.json().get("photos") or []
+            if not photos:
+                return None
+            photo = photos[0]
+            url = photo["src"]["large2x"]
+            cached = self.cache_dir / f"{hashlib.sha256(url.encode()).hexdigest()[:16]}.jpg"
+            if not cached.is_file():
+                img = await self.client.get(url, follow_redirects=True)
+                img.raise_for_status()
+                cached.write_bytes(img.content)
+            return StockPhoto(cached, str(photo["id"]), photo["url"], photo.get("photographer") or "Pexels contributor", photo.get("photographer_url"))
+        except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
+            log.warning("pexels search failed for %r", query, exc_info=True)
+            return None
+
+
+class FixtureStock:
+    """Offline twin: a small deterministic local image, so tests exercise the stock-asset path for free."""
+
+    name = "fixture"
+    licence = "pexels"  # stands in for a real stock licence so quality-gate tests exercise that path too
+    licence_url = "https://www.pexels.com/license/"
+
+    def __init__(self, cache_dir: Path):
+        self.cache_dir = cache_dir
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    async def search_photo(self, query: str) -> StockPhoto | None:
+        from PIL import Image
+
+        path = self.cache_dir / f"fixture-{hashlib.sha256(query.encode()).hexdigest()[:8]}.jpg"
+        if not path.is_file():
+            Image.new("RGB", (1200, 1800), (60, 90, 120)).save(path)
+        return StockPhoto(path, "fixture", "https://example.com/fixture-photo", "Fixture Photographer")
+
+
+def build_stock(s: Settings):
+    if s.stock_provider == "none":
+        return None
+    if s.stock_provider == "fixture":
+        return FixtureStock(s.storage_dir / "stock_cache")
+    if s.stock_provider == "pexels":
+        if not (s.pexels_api_key and s.pexels_api_key.get_secret_value()):
+            log.warning("STOCK_PROVIDER=pexels but PEXELS_API_KEY is empty; every scene will fall back to a title card")
+            return None
+        return PexelsProvider(s.pexels_api_key.get_secret_value(), s.storage_dir / "stock_cache")
+    raise ValueError(f"unknown STOCK_PROVIDER {s.stock_provider}")
 
 
 def build_tts(s: Settings):

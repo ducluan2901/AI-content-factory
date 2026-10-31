@@ -1,9 +1,11 @@
 """Media processing: title cards (Pillow), FFmpeg render/probe, SRT/VTT from voice timings."""
 import json
+import math
+import re
 import subprocess
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 W, H = 1080, 1920
 # keep text out of the platform UI chrome (TikTok/Reels caption + buttons)
@@ -46,10 +48,8 @@ def wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> list[str]:
     return lines + ([cur] if cur else [])
 
 
-def render_card(text: str, index: int, total: int, font_path: str, out: Path) -> None:
-    top, bottom = PALETTES[index % len(PALETTES)]
-    grad = Image.linear_gradient("L").resize((W, H))
-    img = Image.composite(Image.new("RGB", (W, H), bottom), Image.new("RGB", (W, H), top), grad)
+def _draw_caption(img: Image.Image, text: str, index: int, total: int, font_path: str) -> None:
+    """Shared text layer for both a gradient card and a stock photo: safe-area headline + scene counter."""
     draw = ImageDraw.Draw(img)
     max_w, max_h = W - 2 * SAFE_X, H - SAFE_TOP - SAFE_BOTTOM
     size = 104 if index == 0 else 88
@@ -63,9 +63,28 @@ def render_card(text: str, index: int, total: int, font_path: str, out: Path) ->
     y = SAFE_TOP + (max_h - len(lines) * line_h) // 2
     draw.rounded_rectangle([SAFE_X, y - 50, SAFE_X + 140, y - 36], radius=7, fill=(255, 196, 60))
     for line in lines:
-        draw.text((SAFE_X, y), line, font=font, fill=(255, 255, 255))
+        draw.text((SAFE_X, y), line, font=font, fill=(255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0))
         y += line_h
-    draw.text((SAFE_X, H - SAFE_BOTTOM + 40), f"{index + 1}/{total}", font=ImageFont.truetype(font_path, 36), fill=(200, 200, 220))
+    draw.text((SAFE_X, H - SAFE_BOTTOM + 40), f"{index + 1}/{total}", font=ImageFont.truetype(font_path, 36), fill=(220, 220, 230), stroke_width=2, stroke_fill=(0, 0, 0))
+
+
+def render_card(text: str, index: int, total: int, font_path: str, out: Path) -> None:
+    top, bottom = PALETTES[index % len(PALETTES)]
+    grad = Image.linear_gradient("L").resize((W, H))
+    img = Image.composite(Image.new("RGB", (W, H), bottom), Image.new("RGB", (W, H), top), grad)
+    _draw_caption(img, text, index, total, font_path)
+    img.save(out)
+
+
+def render_photo_card(photo_path: Path, text: str, index: int, total: int, font_path: str, out: Path) -> None:
+    """A stock photo cropped to 9:16, darkened under the safe area for legibility, with the same caption as a card."""
+    img = ImageOps.exif_transpose(Image.open(photo_path)).convert("RGB")
+    img = ImageOps.fit(img, (W, H), method=Image.LANCZOS)
+    shade = Image.new("L", (1, H), 0)
+    for y in range(H):
+        shade.putpixel((0, y), int(150 * max(0, (y - (SAFE_TOP - 80)) / (H - SAFE_TOP + 80))))
+    img = Image.composite(Image.new("RGB", (W, H), (0, 0, 0)), img, shade.resize((W, H)))
+    _draw_caption(img, text, index, total, font_path)
     img.save(out)
 
 
@@ -78,18 +97,35 @@ def concat_audio(ffmpeg: str, parts: list[Path], out: Path) -> None:
     run(args)
 
 
+ZOOM_MAX = 1.25  # Ken Burns: total zoom ratio reached by the end of a clip, regardless of its length
+FPS = 30
+
+
 def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path) -> list[str]:
+    """Each still gets a slow Ken Burns zoom (alternating in/out by scene index) before concatenation.
+    zoompan needs an explicit frame budget (d=) and an unbounded looped input - see the shortcut note below."""
     cmd = [ffmpeg, "-y", "-v", "error"]
-    for card, d in zip(cards, durations):
-        cmd += ["-framerate", "30", "-loop", "1", "-t", f"{d:.3f}", "-i", str(card)]
+    for card in cards:
+        cmd += ["-loop", "1", "-i", str(card)]  # unbounded; zoompan's own d= below ends each clip, never -t here
     cmd += ["-i", str(audio)]
     n = len(cards)
-    labels = "".join(f"[{i}:v]" for i in range(n))
+    parts = []
+    for i, d in enumerate(durations):
+        frames = max(1, round(d * FPS))
+        step = (ZOOM_MAX - 1) / frames
+        z = f"min(zoom+{step:.6f},{ZOOM_MAX})" if i % 2 == 0 else f"if(eq(on,0),{ZOOM_MAX},max(zoom-{step:.6f},1.0))"
+        parts.append(f"[{i}:v]scale={W * 2}:{H * 2},zoompan=z='{z}':d={frames}:s={W}x{H}:fps={FPS}[v{i}]")
+    labels = "".join(f"[v{i}]" for i in range(n))
+    parts.append(f"{labels}concat=n={n}:v=1:a=0,format=yuv420p[v]")
     cmd += [
-        "-filter_complex", f"{labels}concat=n={n}:v=1:a=0,format=yuv420p[v]",
+        "-filter_complex", ";".join(parts),
         "-map", "[v]", "-map", f"{n}:a",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", "30",
-        "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(out),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", str(FPS),
+        "-c:a", "aac", "-b:a", "160k",
+        # shortcut: total -t as a safety net against a 1-frame zoompan rounding drift; -shortest alone is not
+        # reliable here since the video inputs are the unbounded -loop 1 streams, not audio-bounded
+        "-t", f"{sum(durations):.3f}",
+        "-movflags", "+faststart", str(out),
     ]
     run(cmd)
     return cmd
@@ -125,6 +161,35 @@ def build_cues(segments: list[dict], max_line: int = 32) -> list[dict]:
             cues.append({"start_ms": int(t), "end_ms": int(end), "lines": g})
             t = end
     return cues
+
+
+LOUDNORM_TARGET_LUFS = -14.0  # BACKLOG 3.3: the voice-over target
+
+
+def normalize_loudness(ffmpeg: str, in_path: Path, out_path: Path) -> float | None:
+    """Single-pass EBU R128 loudness normalisation (shortcut: single-pass, not measure-then-apply two-pass,
+    so the reported figure is an estimate, not an exact measurement; upgrade to two-pass if review shows drift).
+    Returns the achieved integrated loudness in LUFS, or None if it could not be measured (true digital silence
+    reports -inf, which is not a real measurement and is not JSON-serialisable, so it becomes None here too).
+    """
+    cmd = [ffmpeg, "-y", "-hide_banner", "-nostats", "-i", str(in_path),
+           "-af", f"loudnorm=I={LOUDNORM_TARGET_LUFS}:TP=-1.5:LRA=11:print_format=json",
+           "-ar", "48000", str(out_path)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except FileNotFoundError as e:
+        raise MediaError(f"executable not found: {cmd[0]} (set FFMPEG_PATH)") from e
+    if proc.returncode != 0:
+        raise MediaError(f"ffmpeg loudnorm failed ({proc.returncode}): {proc.stderr[-800:]}")
+    m = re.search(r"\{[^{}]*\}", proc.stderr)
+    if not m:
+        return None
+    data = json.loads(m.group(0))
+    try:
+        value = float(data.get("output_i"))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 def write_subtitles(cues: list[dict], srt: Path, vtt: Path) -> None:
