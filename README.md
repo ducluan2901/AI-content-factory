@@ -145,7 +145,10 @@ The script prompt is `app/prompts/script.md` plus one of `format_comedy.md`, `fo
 `format_gadget.md`. Each run records `prompt_version` as `name@sha8` for both files, so a change in output
 can be traced to the prompt that produced it. The script review screen shows advisory checks: estimated
 length against the target, scene count, hook length, card text length, platform limits, missing product
-facts for gadgets, and any figure in the narration that needs verifying.
+facts for gadgets, any figure in the narration that needs verifying, and (gadget only) first-person
+experience or before/after wording such as "mình thử" or "trước và sau". A real trial showed the model narrating a
+planned 3-night test as if it had happened, so the gadget prompt now treats the hook and premise as a filming
+plan, not events, and this check warns when such wording appears.
 
 ## Sprint 3: stock photos, Ken Burns motion, loudness
 
