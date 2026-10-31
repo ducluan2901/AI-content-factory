@@ -63,9 +63,9 @@ with st.sidebar:
     with st.form("clicks"):
         cp = st.selectbox("Product", [p["id"] for p in products], format_func=lambda i: next(p["name"] for p in products if p["id"] == i)) if products else None
         cpub = st.selectbox("Post", [None] + [p["id"] for p in pubs], format_func=lambda i: "-" if i is None else next(f"{p['title']} · {p['platform']}" for p in pubs if p["id"] == i), key="click_pub")
-        n = st.number_input("Clicks", 0)
-        if st.form_submit_button("Save clicks") and cp and api("POST", "/affiliate/clicks", json={"product_id": cp, "publication_id": cpub, "clicks": n}):
-            st.rerun()
+        n = st.number_input("NEW clicks since your last entry", 0, help="Not the running total shown on the program's dashboard: entries are added together.")
+        if st.form_submit_button("Save clicks") and cp and (r := api("POST", "/affiliate/clicks", json={"product_id": cp, "publication_id": cpub, "clicks": n})):
+            st.sidebar.success(f"Saved. This product now totals {r.json()['product_total_clicks']} clicks; if that is more than the dashboard shows, you entered a running total.")
 
 st.subheader("Affiliate products")
 if products:
@@ -88,7 +88,7 @@ if records:
 
 st.subheader("Per video")
 if summary["per_video"]:
-    st.dataframe([{"video": v["title"], "platform": v["platform"], "format": v["format"], "LLM cost $": v["llm_cost_usd"], "earned": v["recognised_income"] or "-", "clicks": v["clicks"]} for v in summary["per_video"]],
+    st.dataframe([{"video": v["title"], "platform": v["platform"], "format": v["format"], "LLM cost $ (this post's share)": v["llm_cost_usd"], "posts of this video": v["posts_of_this_video"], "earned": v["recognised_income"] or "-", "clicks": v["clicks"]} for v in summary["per_video"]],
                  hide_index=True, use_container_width=True)
 else:
     st.info("No posts recorded yet (Analytics page).")
