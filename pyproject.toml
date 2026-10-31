@@ -1,0 +1,26 @@
+[project]
+name = "ai-content-factory"
+version = "0.1.0"
+description = "Topic -> approved vertical short-form video (MVP walking skeleton)"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic-settings",
+  "sqlalchemy>=2",
+  "edge-tts",
+  "pillow",
+  "streamlit",
+  "httpx",
+  "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools]
+packages = ["app"]

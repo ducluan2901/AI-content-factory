@@ -1,0 +1,9 @@
+{
+  "title": "Kịch bản quá ngắn để kiểm tra cổng chất lượng",
+  "caption": "Kịch bản cố ý quá ngắn.",
+  "hashtags": ["#test", "#AI", "#qa"],
+  "scenes": [
+    {"narration": "AI agent sẽ thay đổi cách làm việc.", "on_screen_text": "AI agent"},
+    {"narration": "Theo dõi kênh để xem thêm.", "on_screen_text": "Theo dõi"}
+  ]
+}

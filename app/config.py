@@ -1,0 +1,29 @@
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
+
+    app_env: str = "dev"  # dev | prod | test
+    llm_provider: str = "claude_cli"  # claude_cli | fixture
+    claude_cli_path: str = "claude"
+    claude_model: str = ""
+    tts_provider: str = "edge_tts"  # edge_tts | fixture
+    tts_voice_vi: str = "vi-VN-HoaiMyNeural"
+    tts_voice_en: str = "en-US-AriaNeural"
+    ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
+    font_path: str = r"C:\Windows\Fonts\segoeuib.ttf"
+    database_url: str = "sqlite:///./storage/factory.db"
+    storage_dir: Path = Path("./storage")
+    fixture_dir: Path = ROOT / "tests" / "fixtures"
+    stage_timeout_s: int = 600
+
+    def check(self) -> None:
+        """Boot guard: the subscription-backed CLI is a dev tool, never a client-facing backend (PRD §8)."""
+        if self.app_env == "prod" and self.llm_provider == "claude_cli":
+            raise RuntimeError("LLM_PROVIDER=claude_cli is dev-only; prod needs an API-backed provider")
