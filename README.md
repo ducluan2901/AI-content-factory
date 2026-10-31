@@ -147,6 +147,28 @@ can be traced to the prompt that produced it. The script review screen shows adv
 length against the target, scene count, hook length, card text length, platform limits, missing product
 facts for gadgets, and any figure in the narration that needs verifying.
 
+## Sprint 3: stock photos, Ken Burns motion, loudness
+
+Each scene can now get a real Pexels stock photo instead of a plain gradient card. The script stage writes
+a short English `visual_query` per scene (e.g. "person typing laptop office night"); VISUALS searches Pexels
+with it, crops the photo to 9:16, darkens the bottom for legibility and composites the same caption a card
+would carry. No match, no key configured, or a Pexels error all fall back to a title card - a scene is
+never shipped with an unrecorded licence (BACKLOG R4). Every asset records its licence; stock photos carry
+`licence: pexels`, `source_url`, `source_id` and `author`, same as a card's `licence: generated`.
+
+Set `PEXELS_API_KEY` in `.env` to turn this on (a free account at pexels.com/api - create it yourself, this
+app never creates accounts). With no key, `STOCK_PROVIDER=pexels` quietly behaves like `STOCK_PROVIDER=none`
+and every scene is a card, exactly like before this sprint.
+
+Every still, card or photo, gets a slow Ken Burns zoom (alternating in/out by scene index, up to 25%) before
+the scenes are concatenated, instead of a static frame. The voice-over is loudness-normalised toward -14
+LUFS after synthesis (single-pass `loudnorm`, an estimate, not an exact two-pass measurement - see the
+`shortcut:` note in `app/media.py`); the quality gate's new `loudness` check is advisory and never blocks
+approval, since the measured figure is only as good as that single pass.
+
+Not done this sprint: hardcoded subtitle burn-in (`render_output.subtitles_burned` stays `False`); the
+`SubtitleBuilder`'s SRT/VTT files are still the only subtitle output.
+
 ## Security and content rules
 
 - Secrets only in environment variables; `.env` is git-ignored and never committed.

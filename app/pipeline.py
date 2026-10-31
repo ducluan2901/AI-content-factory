@@ -33,6 +33,7 @@ class SchemaError(Exception):
 class Scene(BaseModel):
     narration: str = Field(min_length=5)
     on_screen_text: str = Field(min_length=1, max_length=120)
+    visual_query: str | None = Field(default=None, max_length=120)  # English stock-photo search terms; falls back to on_screen_text
 
 
 class ScriptOut(BaseModel):
@@ -163,25 +164,40 @@ async def stage_voice(ctx: dict) -> dict:
         timeline.append({"scene_index": i, "start_ms": t, "end_ms": t + dur_ms})
         sentences += [{"scene_index": i, "text": x["text"], "start_ms": t + x["start_ms"], "end_ms": min(t + x["end_ms"], t + dur_ms)} for x in res.sentences]
         t += dur_ms
+    raw_audio = d / "vo_raw.wav"
+    await asyncio.to_thread(media.concat_audio, s.ffmpeg_path, parts, raw_audio)
     audio = d / "vo.wav"
-    await asyncio.to_thread(media.concat_audio, s.ffmpeg_path, parts, audio)
+    loudness_lufs = await asyncio.to_thread(media.normalize_loudness, s.ffmpeg_path, raw_audio, audio)
     voice_id = ctx.get("voice") or getattr(ctx["tts"], "voices", {}).get(job.language, "fixture")
     return {"audio_path": rel(s, audio), "duration_s": round(t / 1000, 3), "scenes": timeline, "segments": sentences,
+            "loudness_lufs": loudness_lufs,
             "_meta": {"provider": ctx["tts"].name, "model": voice_id}}
 
 
 async def stage_visuals(ctx: dict) -> dict:
-    s, scenes = ctx["settings"], ctx["up"]["SCRIPT"]["scenes"]
+    """One asset per scene: a Pexels stock photo with the caption composited on, or a title card when no
+    stock provider is configured, the search found nothing, or the call failed (BACKLOG R4 - a card is a
+    licence-clean fallback, never ship an asset with an unrecorded licence)."""
+    s, scenes, stock = ctx["settings"], ctx["up"]["SCRIPT"]["scenes"], ctx.get("stock")
     d = ctx["dir"] / "visuals" / "cards"
-    assets = []
+    assets, stock_hits = [], 0
     for i, sc in enumerate(scenes):
         p = d / f"{i:02}.png"
-        await asyncio.to_thread(media.render_card, sc["on_screen_text"], i, len(scenes), s.font_path, p)
-        # licence ledger (PRD D3): generated cards are ours; the font is the only third-party input
-        assets.append({"kind": "title_card", "scene_index": i, "order_index": i, "path": rel(s, p), "width": media.W, "height": media.H,
-                       "source_provider": "title_card", "licence": "generated", "attribution_required": False,
-                       "attribution_text": None, "font": Path(s.font_path).name})
-    return {"assets": assets, "_meta": {"provider": "title_card", "model": "pillow"}}
+        photo = await stock.search_photo(sc.get("visual_query") or sc["on_screen_text"]) if stock else None
+        if photo:
+            await asyncio.to_thread(media.render_photo_card, photo.path, sc["on_screen_text"], i, len(scenes), s.font_path, p)
+            assets.append({"kind": "stock_image", "scene_index": i, "order_index": i, "path": rel(s, p), "width": media.W, "height": media.H,
+                           "source_provider": stock.name, "source_url": photo.source_url, "source_id": photo.source_id,
+                           "author": photo.author, "licence": stock.licence, "licence_url": stock.licence_url,
+                           "attribution_required": False, "attribution_text": f"Photo by {photo.author} on Pexels", "font": Path(s.font_path).name})
+            stock_hits += 1
+        else:
+            await asyncio.to_thread(media.render_card, sc["on_screen_text"], i, len(scenes), s.font_path, p)
+            # licence ledger (PRD D3): generated cards are ours; the font is the only third-party input
+            assets.append({"kind": "title_card", "scene_index": i, "order_index": i, "path": rel(s, p), "width": media.W, "height": media.H,
+                           "source_provider": "title_card", "licence": "generated", "attribution_required": False,
+                           "attribution_text": None, "font": Path(s.font_path).name})
+    return {"assets": assets, "stock_hits": stock_hits, "_meta": {"provider": stock.name if stock else "title_card", "model": "pillow"}}
 
 
 async def stage_subtitles(ctx: dict) -> dict:
@@ -232,6 +248,10 @@ async def stage_quality(ctx: dict) -> dict:
         check("av_sync", "error", abs(r["duration_s"] - vo["duration_s"]) <= 0.3, "<=0.3s drift", f"{abs(r['duration_s'] - vo['duration_s']):.2f}s", "Video and voice-over lengths match."),
         check("asset_licence", "error", all(a["licence"] != "unknown" for a in up["VISUALS"]["assets"]), "no unknown licence",
               ",".join(sorted({a["licence"] for a in up["VISUALS"]["assets"]})), "Every visual asset has a recorded licence."),
+        check("loudness", "warning", vo.get("loudness_lufs") is not None and abs(vo["loudness_lufs"] - media.LOUDNORM_TARGET_LUFS) <= 1.5,
+              f"{media.LOUDNORM_TARGET_LUFS}±1.5 LUFS", f"{vo.get('loudness_lufs')} LUFS",
+              "Voice-over loudness is close to the target." if vo.get("loudness_lufs") is not None and abs(vo["loudness_lufs"] - media.LOUDNORM_TARGET_LUFS) <= 1.5
+              else "Voice-over loudness drifted from the target; listen before approving."),
         check("subtitle_readability", "warning", sub["max_chars_per_line"] <= 32 and sub["max_cue_duration_s"] <= 7,
               "<=32 chars/line, <=7s/cue", f"{sub['max_chars_per_line']} chars, {sub['max_cue_duration_s']}s", "Subtitle lines are short enough to read."),
         check("platform_limits", "warning", len(sc["title"]) <= 90 and len(sc["caption"]) <= 300 and 3 <= len(sc["hashtags"]) <= 8,
@@ -260,8 +280,8 @@ RETRYABLE = (ProviderError, SchemaError, asyncio.TimeoutError)
 
 
 class Pipeline:
-    def __init__(self, settings: Settings, sm: sessionmaker[Session], llm, tts):
-        self.s, self.sm, self.llm, self.tts = settings, sm, llm, tts
+    def __init__(self, settings: Settings, sm: sessionmaker[Session], llm, tts, stock=None):
+        self.s, self.sm, self.llm, self.tts, self.stock = settings, sm, llm, tts, stock
 
     def job_dir(self, job_id: str) -> Path:
         d = self.s.storage_dir / "jobs" / job_id
@@ -284,7 +304,7 @@ class Pipeline:
             if name == "SCRIPT":  # a regenerated script builds on the newest earlier draft, superseded or not
                 with self.sm() as db:
                     prev = db.scalars(select(StageRun).where(StageRun.job_id == job.id, StageRun.stage == name, StageRun.status == "OK").order_by(StageRun.attempt.desc())).first()
-            ctx = {"settings": self.s, "llm": self.llm, "tts": self.tts, "job": job, "dir": self.job_dir(job.id), "attempt": attempt, "up": up,
+            ctx = {"settings": self.s, "llm": self.llm, "tts": self.tts, "stock": self.stock, "job": job, "dir": self.job_dir(job.id), "attempt": attempt, "up": up,
                    "previous": json.loads(prev.output_json) if prev else None, "voice": voice}
             try:
                 out = await asyncio.wait_for(fn(ctx), timeout=self.s.stage_timeout_s)
