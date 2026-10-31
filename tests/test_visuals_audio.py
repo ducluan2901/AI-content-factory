@@ -309,3 +309,26 @@ def test_local_photos_mix_with_cards_and_are_recorded_as_owned(tmp_path):
         for a in photos:
             assert a["licence"] == "owned" and a["source_provider"] == "local" and a["attribution_text"] is None and a["source_url"].startswith("file:")
         assert all(a["licence"] == "generated" for a in cards)
+
+
+@needs_ffmpeg
+def test_every_scene_card_appears_at_its_own_time(tmp_path):
+    """Regression: the first real video showed scene 1's card for the whole video. The duration-only check could not
+    see it because every card in that test looked alike, so this one uses a different flat colour per scene."""
+    colours = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    cards = []
+    for i, rgb in enumerate(colours):
+        p = tmp_path / f"c{i}.png"
+        Image.new("RGB", (media.W, media.H), rgb).save(p)
+        cards.append(p)
+    durations = [1.0, 1.4, 1.0]
+    audio = tmp_path / "silent.wav"
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "3.4", str(audio)], check=True)
+    out = tmp_path / "final.mp4"
+    media.render_video(FFMPEG, cards, durations, audio, out)
+    assert abs(float(media.probe(FFPROBE, out)["format"]["duration"]) - 3.4) < 0.1
+    for t, expected in ((0.5, 0), (1.7, 1), (2.9, 2)):
+        png = tmp_path / f"f{t}.png"
+        subprocess.run([FFMPEG, "-y", "-v", "error", "-i", str(out), "-ss", str(t), "-frames:v", "1", str(png)], check=True)
+        r, g, b = Image.open(png).convert("RGB").getpixel((media.W // 2, media.H // 2))
+        assert [r, g, b].index(max(r, g, b)) == expected and max(r, g, b) > 200, (t, expected, (r, g, b))
