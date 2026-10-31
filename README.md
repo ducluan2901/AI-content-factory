@@ -210,6 +210,30 @@ but views are not above the median, otherwise **average**. With fewer than 3 com
 a winner, and the reason says so. "Commercial winner" needs click and order data, so it waits for the
 affiliate module. The Analytics page in the console shows all of this, plus which format has a signal.
 
+## Sprint 6: affiliate, revenue and cost
+
+Everything here is typed in from a statement, a program dashboard or an invoice; nothing is guessed.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST, GET /affiliate/products`, `PATCH /affiliate/products/{id}` | products you may link: program, code, link, commission, status; the list shows clicks and orders per product |
+| `POST /affiliate/clicks` | a click count from the program's dashboard, optionally tied to a post |
+| `POST, GET /revenue`, `PATCH /revenue/{id}` | money in (affiliate, service, booking, platform_ad) or out (`cost`), with a status |
+| `GET /revenue/summary` | the honest report |
+
+Rules the report keeps (plan §3.2, §12.9): status runs `estimated → pending → approved → paid` one way, and any
+open record can end as `rejected`; paid and rejected are final, and an approved amount is fixed, so a mistake
+is a new record. Only approved and paid money counts as earned; estimated and pending sit on a separate line.
+Clicks are never orders: orders-per-click appears only when both numbers exist. Amounts in VND and USD are
+never added together. Set `USD_VND_RATE` if you want one combined VND line, which is then shown next to the
+per-currency figures, labelled with the rate used. The LLM cost the pipeline recorded per job is shown as its own
+USD line and as a cost per exported video; the monthly subscription is not included unless you enter it as a
+cost record.
+
+A post with an affiliate link needs a disclosure where the platform or the law asks for one (plan §12.4):
+`POST /jobs/{id}/publications` with `affiliate_product_id` is refused unless `disclosure_confirmed` is true.
+The Revenue page in the console covers all of this.
+
 ## Security and content rules
 
 - Secrets only in environment variables; `.env` is git-ignored and never committed.

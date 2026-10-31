@@ -235,7 +235,7 @@ the approval wall and the risk list stay; the niche, the video length and the or
 | 3 | 8–12 | TTS, image, video renderer | **done** on branch `sprint-3-visuals-audio`: Pexels stock photos with card fallback and licence records, Ken Burns motion, loudness normalisation. Hardcoded subtitle burn-in still open |
 | 4 | 13–17 | QC, subtitles, Video Studio | **done** on branch `sprint-4-qc-subtitles`: subtitle burn-in, risky-claim check, richer approval screen. Grounded-claim check still waits for the research stage |
 | 5 | 18–23 | publishing, analytics | **done** on branch `sprint-5-analytics`: manual post records, metrics at 24h/72h/7d, classification, due list, per-format summary. Platform APIs still need app review (D.3) |
-| 6 | 24–30 | affiliate, revenue dashboard | new tables from plan §8 |
+| 6 | 24–30 | affiliate, revenue dashboard | **done** on branch `sprint-6-revenue`: affiliate products and clicks, revenue and cost records with statuses, honest per-currency summary, cost per video, disclosure rule. Plan §8 tables `channels`..`video_metrics` all exist now |
 
 Changed decisions: three formats (`comedy`, `facts`, `gadget`) instead of the AI & Technology niche;
 format-specific default lengths (27 / 37 / 32 s) instead of 45–60 s; the quality gate judges length against
