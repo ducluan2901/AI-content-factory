@@ -124,14 +124,16 @@ def subtitle_filter(srt: Path, font_path: str, workdir: Path) -> str:
 def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path,
                  srt: Path | None = None, font_path: str | None = None) -> list[str]:
     """Each still gets a slow Ken Burns zoom (alternating in/out by scene index) before concatenation.
-    zoompan needs an explicit frame budget (d=) and an unbounded looped input - see the shortcut note below.
+    Each still is a single-frame input and zoompan's d= turns that one frame into exactly d output frames, which
+    ends the clip. (A looped input made every clip endless, so concat never left scene 1: the first real video showed
+    scene 1's card for its whole length while a duration-only test passed.)
     With srt and font_path the subtitles are burned into the picture (a platform-independent hard caption)."""
     # burn-in runs ffmpeg with another cwd, so every path must be absolute (STORAGE_DIR defaults to ./storage)
     cards, audio, out = [c.resolve() for c in cards], audio.resolve(), out.resolve()
     srt = srt.resolve() if srt else None
     cmd = [ffmpeg, "-y", "-v", "error"]
     for card in cards:
-        cmd += ["-loop", "1", "-i", str(card)]  # unbounded; zoompan's own d= below ends each clip, never -t here
+        cmd += ["-i", str(card)]  # one frame; no -loop, see the docstring
     cmd += ["-i", str(audio)]
     n = len(cards)
     parts = []
@@ -148,9 +150,7 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
         "-map", "[v]", "-map", f"{n}:a",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-r", str(FPS),
         "-c:a", "aac", "-b:a", "160k",
-        # shortcut: total -t as a safety net against a 1-frame zoompan rounding drift; -shortest alone is not
-        # reliable here since the video inputs are the unbounded -loop 1 streams, not audio-bounded
-        "-t", f"{sum(durations):.3f}",
+        "-shortest",  # frames are rounded per scene (+-1/30 s each); never let a rounding tail outlive the voice
         "-movflags", "+faststart", str(out),
     ]
     run(cmd, cwd=out.parent if srt else None)

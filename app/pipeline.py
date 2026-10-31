@@ -23,7 +23,10 @@ from app.planner import FORMATS
 from app.providers import ProviderError, extract_json
 
 LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
-SYLLABLES_PER_S = {"vi": 3.3, "en": 2.6}  # vi measured: 178 syllables in 53.9s on HoaiMyNeural; en unmeasured; PRD D4
+# Edge HoaiMy, measured: 3.3 syll/s on a 54 s script of long sentences, 2.44 on a 33 s comedy script of short punchy
+# ones (each scene is its own TTS clip, so short scenes carry more padding). 2.6 errs on the short side of a window
+# rather than overshooting it. Every VOICE run now records the observed rate; revise this from those numbers. en unmeasured.
+SYLLABLES_PER_S = {"vi": 2.6, "en": 2.6}
 
 
 class SchemaError(Exception):
@@ -199,6 +202,7 @@ async def stage_voice(ctx: dict) -> dict:
     voice_id = ctx.get("voice") or getattr(ctx["tts"], "voices", {}).get(job.language, "fixture")
     return {"audio_path": rel(s, audio), "duration_s": round(t / 1000, 3), "scenes": timeline, "segments": sentences,
             "loudness_lufs": loudness_lufs,
+            "syllables_per_s_observed": round(ctx["up"]["SCRIPT"]["syllable_count"] / (t / 1000), 2) if t else None,
             "_meta": {"provider": ctx["tts"].name, "model": voice_id}}
 
 
