@@ -132,6 +132,7 @@ class ContentJob(Base):
     profile: Mapped[str] = mapped_column(default="dev")
     # script gate (plan §7.5 SCRIPT_GENERATED -> SCRIPT_APPROVED): pause after SCRIPT until a human approves it
     review_script: Mapped[bool] = mapped_column(default=True)
+    burn_subtitles: Mapped[bool] = mapped_column(default=False)  # hard-code the subtitles into the picture at render
     script_approved_at: Mapped[str | None]
     operator_notes: Mapped[str | None]  # feedback fed into the next script generation
     # shortcut: plain text, not an FK, to avoid the job<->approval FK cycle SQLite cannot create; add when moving to Postgres

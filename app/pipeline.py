@@ -62,6 +62,18 @@ def load_prompt(name: str) -> tuple[str, str]:
     return text, f"{name}@{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 
+def risky_terms(texts: list[str]) -> list[str]:
+    """Terms from app/safety_terms.txt found in any of the texts (case-insensitive); a hit is a warning, never a block."""
+    terms = [ln.strip().lower() for ln in (ROOT / "app" / "safety_terms.txt").read_text(encoding="utf-8").splitlines()
+             if ln.strip() and not ln.startswith("#")]
+    blob = "\n".join(texts).lower()
+    return sorted({t for t in terms if t in blob})
+
+
+def script_texts(sc: dict) -> list[str]:
+    return [sc["title"], sc["caption"]] + [x for s in sc["scenes"] for x in (s["narration"], s["on_screen_text"])]
+
+
 def duration_window(job: ContentJob) -> tuple[int, int]:
     """Accepted length: the job's own target +-20%. Used by the script checks and the quality gate."""
     return round(job.target_duration_s * 0.8), round(job.target_duration_s * 1.2)
@@ -92,6 +104,8 @@ def script_checks(script: ScriptOut, job: ContentJob, est_s: float) -> list[dict
           "title<=90, caption<=300, 3-8 tags", f"{len(script.title)}, {len(script.caption)}, {len(script.hashtags)}", "Title, caption and hashtags fit every platform."),
         c("product_facts", job.format != "gadget" or bool(job.input_product_desc), "product facts given", "given" if job.input_product_desc else "missing",
           "Gadget scripts must come from given product facts, never invented ones."),
+        c("safety_terms", not (hits := risky_terms([script.title, script.caption] + [x for s in script.scenes for x in (s.narration, s.on_screen_text)])),
+          "no risky claim terms", ", ".join(hits) or "none", "No wording from the risky-claims list (app/safety_terms.txt)."),
         c("numbers_to_verify", not digits, "no figures", f"{len(digits)} scene(s) with figures", "Every number in the narration must be verified before approval."),
     ]
 
@@ -218,7 +232,9 @@ async def stage_render(ctx: dict) -> dict:
     durs = [(x["end_ms"] - x["start_ms"]) / 1000 for x in up["VOICE"]["scenes"]]
     d = ctx["dir"] / "render"
     out, thumb = d / "final.mp4", d / "thumb.jpg"
-    cmd = await asyncio.to_thread(media.render_video, s.ffmpeg_path, cards, durs, s.storage_dir / up["VOICE"]["audio_path"], out)
+    burn = ctx["job"].burn_subtitles
+    cmd = await asyncio.to_thread(media.render_video, s.ffmpeg_path, cards, durs, s.storage_dir / up["VOICE"]["audio_path"], out,
+                                  s.storage_dir / up["SUBTITLES"]["srt_path"] if burn else None, s.font_path if burn else None)
     from PIL import Image
     Image.open(cards[0]).convert("RGB").save(thumb, quality=88)
     info = media.probe(s.ffprobe_path, out)
@@ -227,7 +243,7 @@ async def stage_render(ctx: dict) -> dict:
     return {"video_path": rel(s, out), "thumbnail_path": rel(s, thumb), "container": "mp4",
             "video_codec": v.get("codec_name"), "audio_codec": a.get("codec_name"), "width": v.get("width"), "height": v.get("height"),
             "fps": v.get("r_frame_rate"), "duration_s": round(float(info["format"]["duration"]), 3), "bytes": int(info["format"]["size"]),
-            "subtitles_burned": False, "ffmpeg_command": " ".join(cmd), "_meta": {"provider": "ffmpeg"}}
+            "subtitles_burned": burn, "ffmpeg_command": " ".join(cmd), "_meta": {"provider": "ffmpeg"}}
 
 
 async def stage_quality(ctx: dict) -> dict:
@@ -249,9 +265,11 @@ async def stage_quality(ctx: dict) -> dict:
         check("asset_licence", "error", all(a["licence"] != "unknown" for a in up["VISUALS"]["assets"]), "no unknown licence",
               ",".join(sorted({a["licence"] for a in up["VISUALS"]["assets"]})), "Every visual asset has a recorded licence."),
         check("loudness", "warning", vo.get("loudness_lufs") is not None and abs(vo["loudness_lufs"] - media.LOUDNORM_TARGET_LUFS) <= 1.5,
-              f"{media.LOUDNORM_TARGET_LUFS}±1.5 LUFS", f"{vo.get('loudness_lufs')} LUFS",
+              f"{media.LOUDNORM_TARGET_LUFS}±1.5 LUFS", "not measurable (silent audio?)" if vo.get("loudness_lufs") is None else f"{vo['loudness_lufs']} LUFS",
               "Voice-over loudness is close to the target." if vo.get("loudness_lufs") is not None and abs(vo["loudness_lufs"] - media.LOUDNORM_TARGET_LUFS) <= 1.5
               else "Voice-over loudness drifted from the target; listen before approving."),
+        check("safety_terms", "warning", not (hits := risky_terms(script_texts(sc))), "no risky claim terms", ", ".join(hits) or "none",
+              "No wording from the risky-claims list (app/safety_terms.txt)." if not hits else "Risky claim wording found: check it before approving."),
         check("subtitle_readability", "warning", sub["max_chars_per_line"] <= 32 and sub["max_cue_duration_s"] <= 7,
               "<=32 chars/line, <=7s/cue", f"{sub['max_chars_per_line']} chars, {sub['max_cue_duration_s']}s", "Subtitle lines are short enough to read."),
         check("platform_limits", "warning", len(sc["title"]) <= 90 and len(sc["caption"]) <= 300 and 3 <= len(sc["hashtags"]) <= 8,

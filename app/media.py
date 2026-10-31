@@ -2,6 +2,7 @@
 import json
 import math
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -17,9 +18,9 @@ class MediaError(Exception):
     pass
 
 
-def run(cmd: list[str]) -> str:
+def run(cmd: list[str], cwd: Path | None = None) -> str:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
     except FileNotFoundError as e:
         raise MediaError(f"executable not found: {cmd[0]} (set FFMPEG_PATH / FFPROBE_PATH)") from e
     if proc.returncode != 0:
@@ -101,9 +102,33 @@ ZOOM_MAX = 1.25  # Ken Burns: total zoom ratio reached by the end of a clip, reg
 FPS = 30
 
 
-def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path) -> list[str]:
+SUB_SCRIPT_H = 288  # libass default script height for SRT; MarginV and FontSize below are in these units, not pixels
+SUB_SIZE, SUB_MARGIN_V = 11, 75  # ~73 px text, bottom edge ~500 px up: clear of the platform UI (SAFE_BOTTOM = 480)
+
+
+def subtitle_filter(srt: Path, font_path: str, workdir: Path) -> str:
+    """Burn-in filter. libass wants Windows paths escaped ('C\\:/...'), so instead copy the SRT and the font next
+    to the output and refer to them by relative name; the caller runs ffmpeg with cwd=workdir."""
+    from PIL import ImageFont
+
+    fonts = workdir / "fonts"
+    fonts.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(font_path, fonts / Path(font_path).name)
+    shutil.copyfile(srt, workdir / "burn.srt")
+    family = ImageFont.truetype(font_path, 20).getname()[0]
+    style = (f"FontName={family},Bold=1,FontSize={SUB_SIZE},Alignment=2,MarginV={SUB_MARGIN_V},"
+             "MarginL=14,MarginR=14,Outline=2,Shadow=0")
+    return f"subtitles=burn.srt:fontsdir=fonts:force_style='{style}'"
+
+
+def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path,
+                 srt: Path | None = None, font_path: str | None = None) -> list[str]:
     """Each still gets a slow Ken Burns zoom (alternating in/out by scene index) before concatenation.
-    zoompan needs an explicit frame budget (d=) and an unbounded looped input - see the shortcut note below."""
+    zoompan needs an explicit frame budget (d=) and an unbounded looped input - see the shortcut note below.
+    With srt and font_path the subtitles are burned into the picture (a platform-independent hard caption)."""
+    # burn-in runs ffmpeg with another cwd, so every path must be absolute (STORAGE_DIR defaults to ./storage)
+    cards, audio, out = [c.resolve() for c in cards], audio.resolve(), out.resolve()
+    srt = srt.resolve() if srt else None
     cmd = [ffmpeg, "-y", "-v", "error"]
     for card in cards:
         cmd += ["-loop", "1", "-i", str(card)]  # unbounded; zoompan's own d= below ends each clip, never -t here
@@ -116,7 +141,8 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
         z = f"min(zoom+{step:.6f},{ZOOM_MAX})" if i % 2 == 0 else f"if(eq(on,0),{ZOOM_MAX},max(zoom-{step:.6f},1.0))"
         parts.append(f"[{i}:v]scale={W * 2}:{H * 2},zoompan=z='{z}':d={frames}:s={W}x{H}:fps={FPS}[v{i}]")
     labels = "".join(f"[v{i}]" for i in range(n))
-    parts.append(f"{labels}concat=n={n}:v=1:a=0,format=yuv420p[v]")
+    burn = f",{subtitle_filter(srt, font_path, out.parent)}" if srt else ""
+    parts.append(f"{labels}concat=n={n}:v=1:a=0{burn},format=yuv420p[v]")
     cmd += [
         "-filter_complex", ";".join(parts),
         "-map", "[v]", "-map", f"{n}:a",
@@ -127,7 +153,7 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
         "-t", f"{sum(durations):.3f}",
         "-movflags", "+faststart", str(out),
     ]
-    run(cmd)
+    run(cmd, cwd=out.parent if srt else None)
     return cmd
 
 

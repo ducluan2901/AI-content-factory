@@ -20,7 +20,8 @@ with st.sidebar:
         product = st.text_area("Product facts (gadget format)", "")
         lang = st.selectbox("Language", ["vi", "en"])
         dur = st.number_input("Target length (s), 0 = format default", 0, 90, 0)
-        if st.form_submit_button("Submit") and (r := api("POST", "/jobs", json={"topic": topic, "product_desc": product or None, "language": lang, "format": fmt, "channel_id": ch, "target_duration_s": dur or None})):
+        burn = st.checkbox("Burn subtitles into the video")
+        if st.form_submit_button("Submit") and (r := api("POST", "/jobs", json={"topic": topic, "product_desc": product or None, "language": lang, "format": fmt, "channel_id": ch, "target_duration_s": dur or None, "burn_subtitles": burn})):
             st.session_state.job = r.json()["id"]
             st.success("Queued")
     health = api("GET", "/health").json()
@@ -113,10 +114,27 @@ with c2:
             st.markdown(f"**{i + 1}. {scene['on_screen_text']}**  \n{scene['narration']}")
     if "QUALITY" in out:
         st.subheader("Quality checks")
-        st.dataframe(out["QUALITY"]["checks"], hide_index=True, use_container_width=True)
+        checks = out["QUALITY"]["checks"]
+        failed = [c for c in checks if not c["passed"]]
+        st.caption(f"{len(checks) - len(failed)} of {len(checks)} passed · {sum(c['severity'] == 'error' for c in failed)} blocking · {sum(c['severity'] == 'warning' for c in failed)} to review")
+        st.dataframe([{"": "ok" if c["passed"] else ("BLOCK" if c["severity"] == "error" else "review"), "rule": c["rule"], "expected": c["expected"], "actual": c["actual"], "message": c["message"]} for c in checks],
+                     hide_index=True, use_container_width=True)
     if "VISUALS" in out:
         st.subheader("Assets and licences")
-        st.dataframe([{k: a[k] for k in ("order_index", "kind", "source_provider", "licence", "font", "path")} for a in out["VISUALS"]["assets"]], hide_index=True, use_container_width=True)
+        assets = out["VISUALS"]["assets"]
+        st.caption(f"{out['VISUALS'].get('stock_hits', 0)} stock photo(s), {sum(a['kind'] == 'title_card' for a in assets)} title card(s)")
+        cols = st.columns(min(4, len(assets)))
+        for i, a in enumerate(assets):
+            with cols[i % len(cols)]:
+                if r := api("GET", f"/files/{a['path']}"):
+                    st.image(r.content, caption=f"{i + 1}. {a['kind']} · {a['licence']}")
+                if a.get("attribution_text"):
+                    st.caption(f"{a['attribution_text']} · {a.get('source_url', '')}")
+        st.dataframe([{k: a.get(k) for k in ("order_index", "kind", "source_provider", "licence", "author", "source_url", "path")} for a in assets], hide_index=True, use_container_width=True)
+    if "SUBTITLES" in out:
+        with st.expander(f"Subtitles ({out['SUBTITLES']['cue_count']} cues, burned into the video: {out.get('RENDER', {}).get('subtitles_burned', False)})"):
+            if r := api("GET", f"/files/{out['SUBTITLES']['srt_path']}"):
+                st.code(r.content.decode("utf-8"), language="text")
 
 st.subheader("Stage runs (audit trail)")
 st.dataframe([{k: r[k] for k in ("stage", "attempt", "status", "provider", "model", "duration_ms", "cost_usd", "superseded_by", "error_type", "error_message")} for r in d["runs"]], hide_index=True, use_container_width=True)

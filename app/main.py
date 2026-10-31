@@ -27,6 +27,7 @@ class JobIn(BaseModel):
     channel_id: str | None = None
     target_duration_s: int | None = Field(default=None, ge=15, le=90)  # None: the format's default
     review_script: bool = True  # pause at SCRIPT_REVIEW before voice and render
+    burn_subtitles: bool = False  # hard-code the subtitles into the video (SRT/VTT are always exported)
 
 
 class ChannelIn(BaseModel):
@@ -180,7 +181,7 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
                 get_or_404(db, Channel, body.channel_id)
             job = ContentJob(title=body.topic[:120], input_kind="product" if body.product_desc else "topic", input_topic=body.topic,
                              input_product_desc=body.product_desc, language=body.language, format=body.format, channel_id=body.channel_id,
-                             target_duration_s=body.target_duration_s or planner.default_duration(body.format), review_script=body.review_script,
+                             target_duration_s=body.target_duration_s or planner.default_duration(body.format), review_script=body.review_script, burn_subtitles=body.burn_subtitles,
                              profile=s.app_env, status="QUEUED")
             db.add(job)
             db.commit()
