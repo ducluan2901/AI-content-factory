@@ -217,7 +217,7 @@ def build_llm(s: Settings):
 class StockPhoto:
     path: Path
     source_id: str
-    source_url: str
+    source_url: str | None  # None for your own files: a local path must never reach the client bundle
     author: str
     author_url: str | None = None
 
@@ -317,7 +317,7 @@ class LocalStock:
                 best, best_score = f, score
         if best is None:
             return None
-        return StockPhoto(best, best.name, best.resolve().as_uri(), "owner")
+        return StockPhoto(best, best.name, None, "owner")  # the file name is enough; the folder path is private
 
 
 def build_stock(s: Settings):

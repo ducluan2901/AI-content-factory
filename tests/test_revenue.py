@@ -130,3 +130,19 @@ def test_negative_clicks_and_unknown_references_are_refused(client):
     assert client.post("/affiliate/clicks", json={"product_id": prod, "clicks": 1, "publication_id": "pub_missing"}).status_code == 404
     assert client.patch(f"/affiliate/products/{prod}", json={"status": "paused"}).json()["status"] == "paused"
     assert client.patch(f"/affiliate/products/{prod}", json={"name": None}).status_code == 422
+
+
+def test_one_video_posted_twice_shares_one_llm_cost(client):
+    job = exported_job(client, cost=0.06, title="Two platforms")
+    for platform in ("tiktok", "youtube_shorts"):
+        assert client.post(f"/jobs/{job}/publications", json={"platform": platform}).status_code == 201
+    rows = client.get("/revenue/summary").json()["per_video"]
+    assert [r["llm_cost_usd"] for r in rows] == [0.03, 0.03] and all(r["posts_of_this_video"] == 2 for r in rows)
+    assert round(sum(r["llm_cost_usd"] for r in rows), 4) == 0.06  # the rows add up to the real cost, not twice it
+
+
+def test_click_entries_add_up_and_the_reply_shows_the_running_total(client):
+    prod = product(client)
+    assert client.post("/affiliate/clicks", json={"product_id": prod, "clicks": 230}).json()["product_total_clicks"] == 230
+    assert client.post("/affiliate/clicks", json={"product_id": prod, "clicks": 80}).json()["product_total_clicks"] == 310  # new clicks, added
+    assert client.get("/revenue/summary").json()["clicks"] == 310
