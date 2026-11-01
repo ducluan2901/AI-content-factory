@@ -1,8 +1,10 @@
 """Provider ports and adapters. Business code depends on these classes, never on a vendor SDK."""
 import asyncio
 import hashlib
+import io
 import json
 import logging
+import math
 import re
 import subprocess
 import unicodedata
@@ -268,6 +270,7 @@ class PixabayProvider:
     name = "pixabay"
     licence = "pixabay"
     licence_url = "https://pixabay.com/service/license-summary/"
+    STOPWORDS = {"a", "an", "the", "of", "in", "on", "at", "under", "with", "and", "to", "for", "by", "from"}
 
     @staticmethod
     def attribution(photo: "StockPhoto") -> str:
@@ -277,16 +280,41 @@ class PixabayProvider:
         self.api_key, self.cache_dir = api_key, cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.client = client or httpx.AsyncClient(base_url="https://pixabay.com", timeout=15)
+        # shortcut: remembered per process, so a restart may reuse a photo; fine at a few videos a day
+        self.used: set[str] = set()
+
+    async def _is_grey(self, preview_url: str) -> bool:
+        """Black-and-white photos look like a different video next to colour ones: judge on the 150 px preview."""
+        from PIL import Image
+
+        r = await self.client.get(preview_url, follow_redirects=True)
+        r.raise_for_status()
+        sat = Image.open(io.BytesIO(r.content)).convert("HSV").getchannel("S")
+        return sum(sat.getdata()) / (sat.width * sat.height) < 25
 
     async def search_photo(self, query: str) -> StockPhoto | None:
+        """The best-ranked colour photo not used before (two scenes with similar queries got the same photo)."""
         try:
             resp = await self.client.get("/api/", params={"key": self.api_key, "q": query[:100], "image_type": "photo",
-                                                          "orientation": "vertical", "safesearch": "true", "per_page": 3})
+                                                          "orientation": "vertical", "safesearch": "true", "per_page": 20})
             resp.raise_for_status()
-            hits = resp.json().get("hits") or []
-            if not hits:
+            # Pixabay ranks loosely ("tv remote under pillow" -> a yacht): keep hits whose tags cover >= 60% of the content
+            # words; "asian" only ranks ("asian boy dishes" must not settle for an asian boy on a beach)
+            want = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in self.STOPWORDS}
+            core = want - {"asian"}
+            scored = []
+            for i, h in enumerate(resp.json().get("hits") or []):
+                tags = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", h.get("tags", "").lower())}
+                if core and sum(1 for w in core if w in tags) >= math.ceil(0.6 * len(core)):
+                    scored.append((-len(want & tags), i, h))
+            hit = None
+            for _, _, h in sorted(scored, key=lambda x: x[:2]):
+                if str(h["id"]) not in self.used and not await self._is_grey(h["previewURL"]):
+                    hit = h
+                    break
+            if hit is None:
                 return None
-            hit = hits[0]
+            self.used.add(str(hit["id"]))
             url = hit["largeImageURL"]
             cached = self.cache_dir / f"pixabay-{hit['id']}.jpg"
             if not cached.is_file():
