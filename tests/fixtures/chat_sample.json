@@ -1,0 +1,23 @@
+{
+  "title": "Ăn gì cũng được: ba chữ khiến cả phòng đói tới 12 giờ rưỡi",
+  "caption": "Trưa nào cũng một kịch bản. Phòng bạn ai là người chốt chậm nhất?",
+  "hashtags": ["#haihuoc", "#vanphong", "#comtrua"],
+  "hook": "Khi cả phòng hỏi trưa nay ăn gì",
+  "chat_name": "Phòng Marketing",
+  "me": "Tuấn",
+  "messages": [
+    {"sender": "Tuấn", "text": "trưa nay ăn gì mọi người"},
+    {"sender": "Chị Hằng", "text": "ăn gì cũng được"},
+    {"sender": "Linh", "text": "bún bò nha"},
+    {"sender": "Chị Hằng", "text": "hôm qua ăn rồi"},
+    {"sender": "Tuấn", "text": "cơm tấm?"},
+    {"sender": "Chị Hằng", "text": "nóng, ngán"},
+    {"sender": "Linh", "text": "gỏi cuốn"},
+    {"sender": "Chị Hằng", "text": "không no"},
+    {"sender": "Tuấn", "text": "12 rưỡi rồi đó chị"},
+    {"sender": "Chị Hằng", "text": "thôi chị ăn cơm nhà"},
+    {"sender": "Linh", "text": "..."},
+    {"sender": "Chị Hằng", "text": "mấy đứa qua gắp thử đi, chị kho thịt nè"}
+  ],
+  "outro": "Phòng bạn ai là chị Hằng? Tag vào"
+}

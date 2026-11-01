@@ -51,7 +51,8 @@ def extract_json(text: str) -> dict:
 
 
 # USD per 1M tokens (input, output), first-party API rates. Used for stage_run.cost_usd (PRD S6).
-PRICES = {"claude-sonnet-5-5": (2.00, 10.00), "claude-haiku-5-5": (0.10, 0.50), "claude-opus-5-5": (4.00, 20.00)}
+PRICES = {"claude-sonnet-5-5": (2.00, 10.00), "claude-haiku-5-5": (0.10, 0.50), "claude-opus-5-5": (4.00, 20.00),
+          "claude-fable-5-1": (10.00, 50.00)}
 
 
 class AnthropicApiProvider:
