@@ -51,9 +51,13 @@ class ScriptOut(BaseModel):
     @field_validator("hashtags")
     @classmethod
     def _tags(cls, v: list[str]) -> list[str]:
-        # platform convention, and what hashtag search actually matches: lowercase ASCII without diacritics (#haihuoc)
-        return ["#" + "".join(ch for ch in unicodedata.normalize("NFKD", t.replace("đ", "d").replace("Đ", "D")) if ch.isascii() and ch.isalnum()).lower()
-                for t in v]
+        return normalize_tags(v)
+
+
+def normalize_tags(v: list[str]) -> list[str]:
+    """Platform convention, and what hashtag search actually matches: lowercase ASCII without diacritics (#haihuoc)."""
+    return ["#" + "".join(ch for ch in unicodedata.normalize("NFKD", t.replace("đ", "d").replace("Đ", "D")) if ch.isascii() and ch.isalnum()).lower()
+            for t in v]
 
 
 # ---------------------------------------------------------------- stages
