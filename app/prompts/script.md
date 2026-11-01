@@ -22,7 +22,7 @@ Rules:
 - Every sentence of the narration is shown full-screen as it is spoken, so each sentence is at most 12 words and
   carries one idea. A new sentence is a new card: use short sentences to control the pace.
 - on_screen_text is the scene's key phrase, at most 6 words, made of words that also appear in that scene's narration: those words are coloured on screen.
-- visual_query is 3 to 6 English keywords for a stock-photo search that matches the scene, e.g. "person typing laptop office night". Always in English, even when the narration is in {language_name}. Describe the scene's subject and setting, not the on-screen text.
+- visual_query is 2 to 4 plain English keywords for a stock-photo search that matches the scene (fewer words find better photos). Always in English, even when the narration is in {language_name}. Prefer the scene's key object or setting over people, because stock photos of people rarely look Vietnamese: e.g. "tv remote under pillow", "rice cooker kitchen", "phone chat", "dirty dishes". When the scene needs a person, start with "asian" and name the role and action, e.g. "asian grandmother tv", "asian boy dishes". Describe something a camera can see, never an idea or the on-screen text.
 - title at most 90 characters, written as a hook itself. caption at most 300 characters, ending with the question you want answered in the comments.
 - 3 to 8 hashtags, each starting with #, lowercase, without diacritics or spaces (e.g. #haihuoc #giadinh): a mix of one broad tag, two or three topic tags, and one tag people in {language_name} actually search for.
 

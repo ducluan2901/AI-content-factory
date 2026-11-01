@@ -397,25 +397,33 @@ def test_hashtags_become_lowercase_ascii():
 
 
 @pytest.mark.anyio
-async def test_pixabay_search_downloads_once_and_degrades_quietly(tmp_path):
+async def test_pixabay_skips_grey_and_used_photos_and_degrades_quietly(tmp_path):
     calls = []
+    grey = io.BytesIO()
+    Image.new("RGB", (150, 100), (128, 128, 128)).save(grey, format="JPEG")
+
+    def hit(i, tags="family, living room, sofa"):
+        return {"id": i, "pageURL": f"https://pixabay.com/photos/{i}", "largeImageURL": f"https://pixabay.com/get/{i}.jpg",
+                "previewURL": f"https://pixabay.com/preview/{i}.jpg", "user": "ann", "tags": tags}
 
     def handler(request):
         calls.append(request.url.path)
         if request.url.path == "/api/":
             assert request.url.params["key"] == "k" and request.url.params["orientation"] == "vertical"
-            hits = [] if request.url.params["q"] == "nothing" else [{"id": 7, "pageURL": "https://pixabay.com/photos/7",
-                                                                     "largeImageURL": "https://pixabay.com/get/7.jpg", "user": "ann"}]
-            return httpx.Response(200, json={"hits": hits})
-        if request.url.path == "/get/7.jpg":
+            return httpx.Response(200, json={"hits": [] if request.url.params["q"] == "nothing" else [hit(5, "boat, yacht, sea"), hit(9), hit(7), hit(8)]})
+        if request.url.path == "/preview/9.jpg":
+            return httpx.Response(200, content=grey.getvalue())
+        if request.url.path.startswith(("/preview/", "/get/")):
             return httpx.Response(200, content=tiny_jpeg())
         return httpx.Response(500)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://pixabay.com")
     prov = PixabayProvider("k", tmp_path / "cache", client=client)
-    a = await prov.search_photo("family living room")
-    b = await prov.search_photo("family living room")
-    assert a.path == b.path and a.path.is_file() and a.source_url == "https://pixabay.com/photos/7" and prov.attribution(a) == "Image by ann on Pixabay"
-    assert calls.count("/get/7.jpg") == 1  # cached
+    a = await prov.search_photo("family living room")  # 5's tags do not match (Pixabay ranks loosely); 9 is black and white
+    b = await prov.search_photo("family living room")  # 7 already used: the next one
+    assert (a.source_id, b.source_id) == ("7", "8") and a.path.is_file() and prov.attribution(a) == "Image by ann on Pixabay"
+    assert await prov.search_photo("family living room") is None  # only grey or used left: a title card, not a repeat
+    again = await PixabayProvider("k", tmp_path / "cache", client=client).search_photo("family living room")
+    assert again.source_id == "7" and calls.count("/get/7.jpg") == 1  # a new process may reuse it, from the cache
     assert await prov.search_photo("nothing") is None
     assert build_stock(settings(tmp_path, stock_provider="pixabay")) is None  # no key: cards, not a crash
