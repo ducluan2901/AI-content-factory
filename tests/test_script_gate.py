@@ -114,3 +114,12 @@ def test_batch_jobs_from_ideas(env):
     assert all(wait(c, j["id"])["job"]["status"] == "SCRIPT_REVIEW" for j in jobs)
     assert c.post("/ideas/batch-jobs", json={"idea_ids": ["idea_missing"]}).status_code == 404
     assert len(c.post("/ideas/batch-jobs", json={"idea_ids": [ids[0], ids[0]]}).json()) == 1  # duplicates queue one job
+
+
+def test_script_length_follows_the_voice_speaking_rate():
+    from app.config import Settings
+    from app.pipeline import speech_rate
+
+    rates = {p: speech_rate(Settings(_env_file=None, tts_provider=p), "vi") for p in ("fpt", "edge_tts", "elevenlabs")}
+    assert rates["fpt"] > rates["edge_tts"] > rates["elevenlabs"] == 2.2  # a faster voice needs more words for the same length
+    assert speech_rate(Settings(_env_file=None, tts_provider="fpt"), "en") == 2.2

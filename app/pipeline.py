@@ -30,6 +30,14 @@ LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
 # viral-style scripts of very short sentences: 2.11 and 2.31 (each sentence ends in a pause). Every VOICE run records
 # the observed rate; revise this from those numbers. en unmeasured.
 SYLLABLES_PER_S = {"vi": 2.2, "en": 2.2}
+# per voice, vi: Edge is the mean of the last three measurements (2.11, 2.31, 2.59); FPT.TTS-pro 3.4 on one 66-syllable
+# facts script (the voice barely pauses between sentences). ElevenLabs unmeasured: the default above.
+VOICE_RATE_VI = {"edge_tts": 2.35, "fpt": 3.4}
+
+
+def speech_rate(s: Settings, language: str) -> float:
+    """Spoken syllables per second of the configured voice: sizes the script to the target length."""
+    return VOICE_RATE_VI.get(s.tts_provider, SYLLABLES_PER_S["vi"]) if language == "vi" else SYLLABLES_PER_S[language]
 MUSIC_EXT = {".mp3", ".wav", ".m4a", ".ogg"}
 CLIP_FORMATS = {"facts"}  # stock video and word-by-word captions; the other formats keep sentence cards for now
 SHOT_MS = 2000  # the facts reference videos cut every 1-2 s (REFERENCE_LIBRARY.md)
@@ -138,9 +146,8 @@ def script_checks(script: ScriptOut, job: ContentJob, est_s: float) -> list[dict
     ]
 
 
-def finish_script(script: ScriptOut, job: ContentJob, job_dir: Path, version: int) -> dict:
+def finish_script(script: ScriptOut, job: ContentJob, job_dir: Path, version: int, rate: float) -> dict:
     """Shared tail of the LLM stage and a human edit: estimate, checks, and the script-v{n}.json artifact."""
-    rate = SYLLABLES_PER_S[job.language]
     syll = sum(len(sc.narration.split()) for sc in script.scenes)
     est = round(syll / rate, 1)
     out = script.model_dump() | {"version": version, "syllable_count": syll, "estimated_duration_s": est, "checks": script_checks(script, job, est)}
@@ -152,7 +159,7 @@ def finish_script(script: ScriptOut, job: ContentJob, job_dir: Path, version: in
 
 async def stage_script(ctx: dict) -> dict:
     s, job = ctx["settings"], ctx["job"]
-    rate = SYLLABLES_PER_S[job.language]
+    rate = speech_rate(s, job.language)
     template, v_main = load_prompt("script", s.prompt_dir)
     guide, v_fmt = load_prompt(f"format_{job.format if job.format in FORMATS else 'facts'}", s.prompt_dir)
     min_scenes, max_scenes = scene_range(job)
@@ -192,7 +199,7 @@ async def stage_script(ctx: dict) -> dict:
             raise SchemaError(f"script JSON invalid after repair: {err[:300]}")
     finally:
         log_path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
-    return finish_script(script, job, ctx["dir"], ctx["attempt"]) | {"_meta": meta}
+    return finish_script(script, job, ctx["dir"], ctx["attempt"], rate) | {"_meta": meta}
 
 
 async def stage_voice(ctx: dict) -> dict:
@@ -509,7 +516,7 @@ def save_script(db: Session, s: Settings, job_id: str, data: dict, edited_by: st
     script = ScriptOut.model_validate(data)
     supersede_from(db, job_id, "SCRIPT", f"edit@{now()}")
     attempt = len(db.scalars(select(StageRun.id).where(StageRun.job_id == job_id, StageRun.stage == "SCRIPT")).all()) + 1
-    out = finish_script(script, job, s.storage_dir / "jobs" / job_id, attempt)
+    out = finish_script(script, job, s.storage_dir / "jobs" / job_id, attempt, speech_rate(s, job.language))
     db.add(StageRun(job_id=job_id, stage="SCRIPT", attempt=attempt, status="OK", provider="human", model=edited_by.strip(),
                     input_json=json.dumps({"edited_by": edited_by.strip()}), output_json=json.dumps(out, ensure_ascii=False), finished_at=now()))
     job.status, job.script_approved_at, job.current_stage, job.error_summary = "SCRIPT_REVIEW", None, None, None
