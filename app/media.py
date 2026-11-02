@@ -69,7 +69,8 @@ def _draw_caption(img: Image.Image, text: str, index: int, font_path: str, highl
             break
         size -= 6
     y = SAFE_TOP + (max_h - len(lines) * line_h) // 2
-    draw.rounded_rectangle([SAFE_X, y - 50, SAFE_X + 140, y - 36], radius=7, fill=HIGHLIGHT)
+    if lines:  # a text-free card (word captions come at render) gets no accent bar either
+        draw.rounded_rectangle([SAFE_X, y - 50, SAFE_X + 140, y - 36], radius=7, fill=HIGHLIGHT)
     space = draw.textlength(" ", font=font)
     for line in lines:
         x = SAFE_X

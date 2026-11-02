@@ -476,7 +476,8 @@ async def test_pixabay_videos_match_tags_prefer_upright_and_skip_short_grey_or_u
 
     def handler(request):
         if request.url.path == "/api/videos/":
-            return httpx.Response(200, json={"hits": [hit(1, "car, road"), hit(2, duration=2), hit(3), hit(4, w=1080, h=1920), hit(5)]})
+            return httpx.Response(200, json={"hits": [hit(1, "car, road"), hit(6, "perfume, sea, ocean"), hit(2, duration=2), hit(3),
+                                                      hit(4, w=1080, h=1920), hit(5)]})
         if request.url.path == "/5.jpg":
             return httpx.Response(200, content=grey.getvalue())
         if request.url.path.endswith(".jpg"):
@@ -486,10 +487,12 @@ async def test_pixabay_videos_match_tags_prefer_upright_and_skip_short_grey_or_u
         return httpx.Response(500)
 
     prov = PixabayProvider("k", tmp_path / "cache", client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://pixabay.com"))
-    clips = await prov.search_videos("octopus sea")
-    assert [c.source_id for c in clips] == ["4", "3"]  # 1 off-topic, 2 too short, 5 black and white; upright 4 first
+    clips = await prov.search_videos("octopus sea ocean")
+    assert [c.source_id for c in clips] == ["4", "3"]  # 1 off-topic, 6 lacks the subject, 2 too short, 5 grey; upright 4 first
     assert clips[0].path.read_bytes() == b"mp4" and clips[0].duration_s == 10.0 and prov.attribution(clips[0]) == "Image by bo on Pixabay"
-    assert await prov.search_videos("octopus sea") == []  # all used: the scene falls back to a photo
+    assert await prov.search_videos("octopus sea ocean") == []  # all used: the scene falls back to a photo
+    fresh = PixabayProvider("k", tmp_path / "cache", client=prov.client)
+    assert [c.source_id for c in await fresh.search_videos("octopus blue blood")] == ["4", "3"]  # no full match: the subject alone
 
 
 @needs_ffmpeg

@@ -368,13 +368,17 @@ class PixabayProvider:
 
     def _ranked(self, query: str, hits: list[dict], bonus=lambda h: 0) -> list[dict]:
         """Pixabay ranks loosely ("tv remote under pillow" -> a yacht): keep hits whose tags cover >= 60% of the content
-        words, best coverage first; "asian" only ranks ("asian boy dishes" must not settle for an asian boy on a beach)."""
-        want = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in self.STOPWORDS}
+        words, best coverage first; "asian" only ranks ("asian boy dishes" must not settle for an asian boy on a beach).
+        The first content word is the subject (the prompt puts the object first) and must be a tag: "octopus close up"
+        matched a perfume clip on "close" and "up" alone."""
+        words = [w.rstrip("s") for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in self.STOPWORDS]
+        want = set(words)
         core = want - {"asian"}
+        subject = next((w for w in words if w != "asian"), None)
         scored = []
         for i, h in enumerate(hits):
             tags = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", h.get("tags", "").lower())}
-            if core and sum(1 for w in core if w in tags) >= math.ceil(0.6 * len(core)):
+            if core and subject in tags and sum(1 for w in core if w in tags) >= math.ceil(0.6 * len(core)):
                 scored.append((-len(want & tags) - bonus(h), i, h))
         return [h for _, _, h in sorted(scored, key=lambda x: x[:2])]
 
@@ -400,6 +404,9 @@ class PixabayProvider:
                 out.append(StockPhoto(cached, str(h["id"]), h["pageURL"], h.get("user") or "Pixabay contributor", duration_s=float(h["duration"])))
                 if len(out) == n:
                     break
+            # nothing for the full query ("octopus close up"): any fresh clip of the subject beats a blank card
+            if not out and (words := [w for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in self.STOPWORDS | {"asian"}])[1:]:
+                return await self.search_videos(words[0], n)
             return out
         except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
             log.warning("pixabay video search failed for %r", query, exc_info=True)
