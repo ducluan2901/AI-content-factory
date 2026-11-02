@@ -123,3 +123,30 @@ def test_script_length_follows_the_voice_speaking_rate():
     rates = {p: speech_rate(Settings(_env_file=None, tts_provider=p), "vi") for p in ("fpt", "edge_tts", "elevenlabs")}
     assert rates["fpt"] > rates["edge_tts"] > rates["elevenlabs"] == 2.2  # a faster voice needs more words for the same length
     assert speech_rate(Settings(_env_file=None, tts_provider="fpt"), "en") == 2.2
+
+
+def test_a_script_outside_the_length_window_is_rewritten_once_and_the_closer_draft_kept(tmp_path):
+    long = json.loads((FIX / "script_vi.json").read_text(encoding="utf-8"))
+    syll = sum(len(sc["narration"].split()) for sc in long["scenes"])  # 178: ~81 s at 2.2 syllables/s, far over 45 s
+    short = json.loads(json.dumps(long))
+    for sc in short["scenes"]:
+        words = sc["narration"].split()
+        sc["narration"] = " ".join(words[:len(words) // 2 + 1])
+    cut = sum(len(sc["narration"].split()) for sc in short["scenes"])
+    assert 36 <= cut / 2.2 <= 54  # the halved draft fits the 45 s window
+
+    class TwoDrafts(RecordingLLM):
+        async def complete(self, prompt, timeout_s=300):
+            self.prompts.append(prompt)
+            return LLMResponse(json.dumps(long if len(self.prompts) == 1 else short, ensure_ascii=False), "fake", "fake", cost_usd=0.01)
+
+    s = Settings(_env_file=None, app_env="test", llm_provider="fixture", tts_provider="fixture", storage_dir=tmp_path,
+                 database_url=f"sqlite:///{(tmp_path / 't.db').as_posix()}")
+    llm = TwoDrafts(FIX / "script_vi.json")
+    with TestClient(create_app(s, llm=llm, tts=FixtureTTS("ffmpeg"))) as c:
+        job = c.post("/jobs", json={"topic": "x y z", "target_duration_s": 45}).json()
+        d = wait(c, job["id"])
+    assert len(llm.prompts) == 2 and f"That script has {syll} spoken syllables" in llm.prompts[1] and "Cut about" in llm.prompts[1]
+    assert d["outputs"]["SCRIPT"]["syllable_count"] == cut
+    run = next(r for r in d["runs"] if r["stage"] == "SCRIPT")
+    assert abs(run["cost_usd"] - 0.02) < 1e-9  # both calls are billed to the stage

@@ -197,6 +197,24 @@ async def stage_script(ctx: dict) -> dict:
                 prompt = f"{prompt}\n\nYour previous answer was invalid:\n{err}\n\nPrevious answer:\n{resp.text[:4000]}\n\nReturn the corrected JSON object only."
         else:
             raise SchemaError(f"script JSON invalid after repair: {err[:300]}")
+        # models undershoot a syllable budget (asked for 119, wrote 87): one rewrite to length, keep whichever is closer
+        lo, hi = duration_window(job)
+        target = job.target_duration_s * rate
+        syll = sum(len(sc.narration.split()) for sc in script.scenes)
+        if not lo <= syll / rate <= hi:
+            resp = await ctx["llm"].complete(
+                f"{prompt}\n\nPrevious answer:\n{resp.text[:4000]}\n\nThat script has {syll} spoken syllables, about {syll / rate:.0f} s "
+                f"when read aloud; it must be {lo}-{hi} s, about {target:.0f} syllables. "
+                f"{'Add about ' + str(round(target - syll)) + ' syllables: more concrete detail inside the existing beats, or one more beat' if syll < target else 'Cut about ' + str(round(syll - target)) + ' syllables'}, "
+                "keeping the hook, the order and the sources. Return the full corrected JSON object only.", timeout_s=s.stage_timeout_s)
+            log["responses"].append(resp.text)
+            meta["cost_usd"] += resp.cost_usd
+            try:
+                again = ScriptOut.model_validate(extract_json(resp.text))
+                if abs(sum(len(sc.narration.split()) for sc in again.scenes) - target) < abs(syll - target):
+                    script = again
+            except (ValueError, ValidationError):
+                pass  # the first valid draft stands; the script checks show its length
     finally:
         log_path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
     return finish_script(script, job, ctx["dir"], ctx["attempt"], rate) | {"_meta": meta}
