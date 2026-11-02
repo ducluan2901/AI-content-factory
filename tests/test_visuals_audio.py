@@ -515,6 +515,8 @@ def test_facts_job_cuts_stock_clips_every_two_seconds_and_burns_word_captions(tm
         assert vis["assets"][0]["start_ms"] == 0 and vis["assets"][-1]["end_ms"] == vo["scenes"][-1]["end_ms"]
         assert all(a["end_ms"] == b["start_ms"] for a, b in zip(vis["assets"], vis["assets"][1:]))
         assert d["outputs"]["RENDER"]["subtitles_burned"] is True and d["outputs"]["SUBTITLES"]["ass_path"].endswith("vi.ass")
+        tags = d["outputs"]["SCRIPT"]["hashtags"]
+        assert tags[:3] == ["#suthatthuvi", "#khamphathegioi", "#learnontiktok"] and tags[-1] == "#viral" and len(tags) <= 8
 
 
 @needs_ffmpeg

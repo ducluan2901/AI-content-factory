@@ -8,6 +8,10 @@ What the viral ones do, and you must too:
 - Sentences vary: mostly short, now and then one longer sentence for the vivid image. Never repeat a filler or reaction ("Thật đấy", "Khoan đã") in the same script; use at most two reactions in total.
 - The ending turns the viewer into a participant: a question they can answer from their own experience ("Mèo nhà bạn có làm vậy không?"), not "follow để xem thêm".
 
+Caption and hashtags (what the viral Vietnamese facts videos use, 200K to 17M views):
+- caption is one curiosity line that teases the strangest fact without giving it away, then the question for the comments. No paragraph.
+- hashtags are exactly these, in this order: #suthatthuvi #khamphathegioi #LearnOnTikTok, then one tag for the topic in lowercase Vietnamese without diacritics (#bachtuoc, #meo), then #animals when the topic is an animal, and #viral last. Spell them exactly as written.
+
 Visuals:
 - Each scene gets its own visual_query showing that fact's image, and no two scenes share one. Pick things stock video really has: the animal or object in action, close-ups, everyday settings ("cat stretching", "cat eyes close up", "cat sleeping sofa"). If a fact is about an inside part (heart, brain, blood), show the whole animal doing something instead.
 
