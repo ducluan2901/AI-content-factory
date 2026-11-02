@@ -440,6 +440,7 @@ def test_word_captions_colour_one_word_at_a_time(tmp_path):
     assert n == len(events) == 9
     assert events[0].endswith(f"{{\\c{media.WORD_COLOR}}}Số{{\\c&HFFFFFF&}} 1. Bạch")  # 3 words on screen, the spoken one in colour
     assert events[3].endswith(f"{{\\c{media.WORD_COLOR}}}tuộc{{\\c&HFFFFFF&}} có ba")
+    assert media.POP in events[0] and media.POP in events[3] and media.POP not in events[1]  # each new group pops in once
     times = [(e.split(",")[1], e.split(",")[2]) for e in events]
     assert times[0][0] == "0:00:00.00" and times[6][1] == "0:00:03.00" and times[-1][1] == "0:00:04.00"
     assert all(a[1] == b[0] for a, b in zip(times, times[1:]))  # back to back: the overlapping second sentence waits
@@ -458,7 +459,12 @@ def test_clips_and_cards_render_together_with_burned_word_captions(tmp_path):
     media.write_word_captions([{"text": "Một hai ba bốn năm", "start_ms": 0, "end_ms": 3500}], ass)
     out = tmp_path / "render" / "final.mp4"
     out.parent.mkdir()
-    media.render_video(FFMPEG, [clip, card], [2.5, 1.0], audio, out, ass, r"C:\Windows\Fonts\segoeuib.ttf", offsets=[0.5, 0.0])
+    media.render_video(FFMPEG, [clip, card], [2.5, 1.0], audio, out, ass, r"C:\Windows\Fonts\segoeuib.ttf", offsets=[0.5, 0.0], whoosh_at=[2.5])
+    def loudness(start, dur):  # the voice track is silent: any sound is the whoosh
+        err = subprocess.run([FFMPEG, "-v", "info", "-ss", str(start), "-t", str(dur), "-i", str(out), "-af", "volumedetect", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        return float(err.split("max_volume:")[1].split("dB")[0])
+    assert loudness(2.2, 0.4) > -40 and loudness(0.5, 1.0) < -80  # a whoosh on the cut, silence elsewhere
     info = media.probe(FFPROBE, out)
     v = next(s for s in info["streams"] if s["codec_type"] == "video")
     assert (v["width"], v["height"]) == (media.W, media.H) and abs(float(info["format"]["duration"]) - 3.5) < 0.1

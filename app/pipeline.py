@@ -340,7 +340,8 @@ async def stage_render(ctx: dict) -> dict:
     subs = s.storage_dir / up["SUBTITLES"]["ass_path" if words else "srt_path"] if burn else None
     music = pick_music(s, ctx["job"].id)
     cmd = await asyncio.to_thread(media.render_video, s.ffmpeg_path, cards, durs, s.storage_dir / up["VOICE"]["audio_path"], out,
-                                  subs, s.font_path if burn else None, music, [a.get("clip_offset_s", 0.0) for a in up["VISUALS"]["assets"]])
+                                  subs, s.font_path if burn else None, music, [a.get("clip_offset_s", 0.0) for a in up["VISUALS"]["assets"]],
+                                  [x["start_ms"] / 1000 for x in up["VOICE"]["scenes"][1:]] if words else None)
     await asyncio.to_thread(media.run, [s.ffmpeg_path, "-y", "-v", "error", "-ss", "0.3", "-i", str(out), "-frames:v", "1", "-q:v", "3", str(thumb)])
     info = media.probe(s.ffprobe_path, out)
     v = next((x for x in info["streams"] if x["codec_type"] == "video"), {})

@@ -114,6 +114,7 @@ FPS = 30
 # each card lands with a quick zoom-out "punch" (PUNCH_FRAMES frames), then drifts in slowly up to ZOOM_MAX
 PUNCH_FRAMES, PUNCH_ZOOM, DRIFT_PER_FRAME, ZOOM_MAX = 8, 1.10, 0.0006, 1.25
 MUSIC_GAIN_DB = -17  # music under a -14 LUFS voice: present, never competing
+WHOOSH_S, WHOOSH_GAIN_DB = 0.45, -12
 
 
 SUB_SCRIPT_H = 288  # libass default script height for SRT; MarginV and FontSize below are in these units, not pixels
@@ -141,14 +142,15 @@ def subtitle_filter(srt: Path, font_path: str, workdir: Path) -> str:
 
 def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path,
                  srt: Path | None = None, font_path: str | None = None, music: Path | None = None,
-                 offsets: list[float] | None = None) -> list[str]:
+                 offsets: list[float] | None = None, whoosh_at: list[float] | None = None) -> list[str]:
     """Each still lands with a punch zoom and then drifts in slowly, before concatenation. An .mp4 in `cards` is a
     stock clip instead: it plays from its offset (seconds), cropped to fill 9:16, held on its last frame if too short.
     Each still is a single-frame input and zoompan's d= turns that one frame into exactly d output frames, which
     ends the clip. (A looped input made every clip endless, so concat never left scene 1: the first real video showed
     scene 1's card for its whole length while a duration-only test passed.)
     With srt and font_path the subtitles are burned into the picture (a platform-independent hard caption).
-    With music, the track loops under the voice at MUSIC_GAIN_DB and fades out over the last two seconds."""
+    With music, the track loops under the voice at MUSIC_GAIN_DB and fades out over the last two seconds.
+    whoosh_at: seconds where a whoosh peaks (the start of each new fact)."""
     # burn-in runs ffmpeg with another cwd, so every path must be absolute (STORAGE_DIR defaults to ./storage)
     cards, audio, out = [c.resolve() for c in cards], audio.resolve(), out.resolve()
     srt = srt.resolve() if srt else None
@@ -174,12 +176,22 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
     labels = "".join(f"[v{i}]" for i in range(n))
     burn = f",{subtitle_filter(srt, font_path, out.parent)}" if srt else ""
     parts.append(f"{labels}concat=n={n}:v=1:a=0{burn},format=yuv420p[v]")
-    amap = f"{n}:a"
+    amap, mix = f"{n}:a", [f"[{n}:a]"]
     if music:
         cmd += ["-stream_loop", "-1", "-i", str(music.resolve())]
         fade_at = max(sum(durations) - 2, 0)
-        parts.append(f"[{n + 1}:a]volume={MUSIC_GAIN_DB}dB,afade=t=out:st={fade_at:.2f}:d=2[m];"
-                     f"[{n}:a][m]amix=inputs=2:duration=first:normalize=0[a]")
+        parts.append(f"[{n + 1}:a]volume={MUSIC_GAIN_DB}dB,afade=t=out:st={fade_at:.2f}:d=2[m]")
+        mix.append("[m]")
+    if whoosh_at:  # a short swell of filtered noise that peaks on each cut: marks "next fact" like the reference videos
+        k = len(whoosh_at)
+        parts.append(f"anoisesrc=d={WHOOSH_S}:c=pink:a=0.5,highpass=f=500,lowpass=f=5000,afade=t=in:d={WHOOSH_S * 0.6:.2f},"
+                     f"afade=t=out:st={WHOOSH_S * 0.6:.2f}:d={WHOOSH_S * 0.4:.2f},volume={WHOOSH_GAIN_DB}dB,asplit={k}"
+                     + "".join(f"[w{j}]" for j in range(k)))
+        for j, t in enumerate(whoosh_at):
+            parts.append(f"[w{j}]adelay={round(max(0.0, t - WHOOSH_S * 0.6) * 1000)}:all=1[wd{j}]")
+            mix.append(f"[wd{j}]")
+    if len(mix) > 1:
+        parts.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:normalize=0[a]")
         amap = "[a]"
     cmd += [
         "-filter_complex", ";".join(parts),
@@ -261,6 +273,7 @@ def write_subtitles(cues: list[dict], srt: Path, vtt: Path) -> None:
 
 WORD_CHUNK = 3  # words on screen at once
 WORD_COLOR = "&H3CC4FF&"  # HIGHLIGHT in ASS's blue-green-red order
+POP = "{\\fscx70\\fscy70\\t(0,90,\\fscx100\\fscy100)}"
 ASS_HEADER = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {W}
@@ -305,6 +318,8 @@ def write_word_captions(segments: list[dict], out: Path) -> int:
             c = i - i % WORD_CHUNK
             chunk = words[c:c + WORD_CHUNK]
             text = " ".join(f"{{\\c{WORD_COLOR}}}{x}{{\\c&HFFFFFF&}}" if c + j == i else x for j, x in enumerate(chunk))
+            if i == c:  # a new group of words pops in: 70% to full size over 90 ms
+                text = POP + text
             events.append(f"Dialogue: 0,{_ass_ts(s0)},{_ass_ts(e0)},Word,,0,0,0,,{text}")
         prev_end = ends[-1]
     out.write_text(ASS_HEADER + "\n".join(events) + "\n", encoding="utf-8")
