@@ -40,6 +40,7 @@ def speech_rate(s: Settings, language: str) -> float:
     return VOICE_RATE_VI.get(s.tts_provider, SYLLABLES_PER_S["vi"]) if language == "vi" else SYLLABLES_PER_S[language]
 MUSIC_EXT = {".mp3", ".wav", ".m4a", ".ogg"}
 CLIP_FORMATS = {"facts"}  # stock video and word-by-word captions; the other formats keep sentence cards for now
+FACTS_TAGS = ["#suthatthuvi", "#khamphathegioi", "#learnontiktok"]  # on 2026-11-02's viral facts videos (200K-17M views)
 SHOT_MS = 2000  # the facts reference videos cut every 1-2 s (REFERENCE_LIBRARY.md)
 
 
@@ -217,6 +218,9 @@ async def stage_script(ctx: dict) -> dict:
                 pass  # the first valid draft stands; the script checks show its length
     finally:
         log_path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+    if job.format == "facts":  # the viral facts videos' tags, spelled right every time (a draft wrote #sudthuthuvi)
+        own = [t for t in script.hashtags if t not in FACTS_TAGS + ["#viral"]]
+        script.hashtags = (FACTS_TAGS + own)[:7] + ["#viral"]
     return finish_script(script, job, ctx["dir"], ctx["attempt"], rate) | {"_meta": meta}
 
 
