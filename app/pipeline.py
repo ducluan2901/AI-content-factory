@@ -264,7 +264,7 @@ async def stage_visuals(ctx: dict) -> dict:
         stock_hits += bool(clips or photo)
         reused = clips_on and not clips and not photo and bool(pool)
         if reused:  # the search ran dry (every octopus clip already used): an earlier clip, later in, beats a blank card
-            clips = pool[-3:]
+            clips = pool[i % len(pool):] + pool[:i % len(pool)]  # every clip so far, so the late scenes do not all loop one scene's
         pool += [] if reused else clips
         if clips:
             n = max(1, math.ceil((span["end_ms"] - span["start_ms"]) / SHOT_MS))
