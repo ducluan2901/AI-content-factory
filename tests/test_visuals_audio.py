@@ -427,3 +427,82 @@ async def test_pixabay_skips_grey_and_used_photos_and_degrades_quietly(tmp_path)
     assert again.source_id == "7" and calls.count("/get/7.jpg") == 1  # a new process may reuse it, from the cache
     assert await prov.search_photo("nothing") is None
     assert build_stock(settings(tmp_path, stock_provider="pixabay")) is None  # no key: cards, not a crash
+
+
+# ---------------------------------------------------------------- facts format: stock clips + word-by-word captions
+
+
+def test_word_captions_colour_one_word_at_a_time(tmp_path):
+    out = tmp_path / "w.ass"
+    n = media.write_word_captions([{"text": "Số 1. Bạch tuộc có ba tim.", "start_ms": 0, "end_ms": 3000},
+                                   {"text": "Thật {đấy}.", "start_ms": 2990, "end_ms": 4000}], out)
+    events = [l for l in out.read_text(encoding="utf-8").splitlines() if l.startswith("Dialogue:")]
+    assert n == len(events) == 9
+    assert events[0].endswith(f"{{\\c{media.WORD_COLOR}}}Số{{\\c&HFFFFFF&}} 1. Bạch")  # 3 words on screen, the spoken one in colour
+    assert events[3].endswith(f"{{\\c{media.WORD_COLOR}}}tuộc{{\\c&HFFFFFF&}} có ba")
+    times = [(e.split(",")[1], e.split(",")[2]) for e in events]
+    assert times[0][0] == "0:00:00.00" and times[6][1] == "0:00:03.00" and times[-1][1] == "0:00:04.00"
+    assert all(a[1] == b[0] for a, b in zip(times, times[1:]))  # back to back: the overlapping second sentence waits
+    assert "{đấy}" not in events[-1] and "đấy." in events[-1]  # braces are ASS syntax: stripped
+
+
+@needs_ffmpeg
+def test_clips_and_cards_render_together_with_burned_word_captions(tmp_path):
+    clip = tmp_path / "clip.mp4"  # landscape and shorter than its slot: cropped to 9:16, last frame held
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-t", "2", str(clip)], check=True)
+    card = tmp_path / "c.png"
+    media.render_card("", 1, r"C:\Windows\Fonts\segoeuib.ttf", card)
+    audio = tmp_path / "a.wav"
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "3.5", str(audio)], check=True)
+    ass = tmp_path / "vi.ass"
+    media.write_word_captions([{"text": "Một hai ba bốn năm", "start_ms": 0, "end_ms": 3500}], ass)
+    out = tmp_path / "render" / "final.mp4"
+    out.parent.mkdir()
+    media.render_video(FFMPEG, [clip, card], [2.5, 1.0], audio, out, ass, r"C:\Windows\Fonts\segoeuib.ttf", offsets=[0.5, 0.0])
+    info = media.probe(FFPROBE, out)
+    v = next(s for s in info["streams"] if s["codec_type"] == "video")
+    assert (v["width"], v["height"]) == (media.W, media.H) and abs(float(info["format"]["duration"]) - 3.5) < 0.1
+    assert (out.parent / "burn.ass").is_file()
+
+
+@pytest.mark.anyio
+async def test_pixabay_videos_match_tags_prefer_upright_and_skip_short_grey_or_used(tmp_path):
+    grey = io.BytesIO()
+    Image.new("RGB", (150, 100), (128, 128, 128)).save(grey, format="JPEG")
+
+    def hit(i, tags="octopus, sea, ocean", duration=10, w=1920, h=1080):
+        return {"id": i, "pageURL": f"https://pixabay.com/videos/{i}", "user": "bo", "tags": tags, "duration": duration,
+                "videos": {"medium": {"url": f"https://cdn.test/{i}.mp4", "width": w, "height": h, "thumbnail": f"https://cdn.test/{i}.jpg"}}}
+
+    def handler(request):
+        if request.url.path == "/api/videos/":
+            return httpx.Response(200, json={"hits": [hit(1, "car, road"), hit(2, duration=2), hit(3), hit(4, w=1080, h=1920), hit(5)]})
+        if request.url.path == "/5.jpg":
+            return httpx.Response(200, content=grey.getvalue())
+        if request.url.path.endswith(".jpg"):
+            return httpx.Response(200, content=tiny_jpeg())
+        if request.url.path.endswith(".mp4"):
+            return httpx.Response(200, content=b"mp4")
+        return httpx.Response(500)
+
+    prov = PixabayProvider("k", tmp_path / "cache", client=httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://pixabay.com"))
+    clips = await prov.search_videos("octopus sea")
+    assert [c.source_id for c in clips] == ["4", "3"]  # 1 off-topic, 2 too short, 5 black and white; upright 4 first
+    assert clips[0].path.read_bytes() == b"mp4" and clips[0].duration_s == 10.0 and prov.attribution(clips[0]) == "Image by bo on Pixabay"
+    assert await prov.search_videos("octopus sea") == []  # all used: the scene falls back to a photo
+
+
+@needs_ffmpeg
+def test_facts_job_cuts_stock_clips_every_two_seconds_and_burns_word_captions(tmp_path):
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path), stock=FixtureStock(tmp_path / "cache", s.ffmpeg_path))
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "format": "facts", "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+        vis, vo = d["outputs"]["VISUALS"], d["outputs"]["VOICE"]
+        assert vis["captions"] == "words" and all(a["kind"] == "stock_video" and a["licence"] == "pexels" for a in vis["assets"])
+        assert all(a["end_ms"] - a["start_ms"] <= 2000 for a in vis["assets"])
+        assert vis["assets"][0]["start_ms"] == 0 and vis["assets"][-1]["end_ms"] == vo["scenes"][-1]["end_ms"]
+        assert all(a["end_ms"] == b["start_ms"] for a, b in zip(vis["assets"], vis["assets"][1:]))
+        assert d["outputs"]["RENDER"]["subtitles_burned"] is True and d["outputs"]["SUBTITLES"]["ass_path"].endswith("vi.ass")

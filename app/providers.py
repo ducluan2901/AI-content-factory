@@ -295,6 +295,7 @@ class StockPhoto:
     source_url: str | None  # None for your own files: a local path must never reach the client bundle
     author: str
     author_url: str | None = None
+    duration_s: float | None = None  # stock video clips only
 
 
 class PexelsProvider:
@@ -365,23 +366,53 @@ class PixabayProvider:
         sat = Image.open(io.BytesIO(r.content)).convert("HSV").getchannel("S")
         return sum(sat.getdata()) / (sat.width * sat.height) < 25
 
+    def _ranked(self, query: str, hits: list[dict], bonus=lambda h: 0) -> list[dict]:
+        """Pixabay ranks loosely ("tv remote under pillow" -> a yacht): keep hits whose tags cover >= 60% of the content
+        words, best coverage first; "asian" only ranks ("asian boy dishes" must not settle for an asian boy on a beach)."""
+        want = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in self.STOPWORDS}
+        core = want - {"asian"}
+        scored = []
+        for i, h in enumerate(hits):
+            tags = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", h.get("tags", "").lower())}
+            if core and sum(1 for w in core if w in tags) >= math.ceil(0.6 * len(core)):
+                scored.append((-len(want & tags) - bonus(h), i, h))
+        return [h for _, _, h in sorted(scored, key=lambda x: x[:2])]
+
+    async def search_videos(self, query: str, n: int = 3) -> list[StockPhoto]:
+        """Up to n colour clips of at least 3 s not used before, upright ones first (less is cropped away for 9:16).
+        Empty on no result or any failure: the caller falls back to a photo (BACKLOG R4)."""
+        try:
+            resp = await self.client.get("/api/videos/", params={"key": self.api_key, "q": query[:100], "video_type": "film",
+                                                                 "safesearch": "true", "per_page": 20})
+            resp.raise_for_status()
+            hits = [h for h in resp.json().get("hits") or [] if h.get("duration", 0) >= 3 and h.get("videos", {}).get("medium", {}).get("url")]
+            out = []
+            for h in self._ranked(query, hits, bonus=lambda h: h["videos"]["medium"].get("height", 0) > h["videos"]["medium"].get("width", 1)):
+                thumb = h["videos"]["medium"].get("thumbnail")
+                if str(h["id"]) in self.used or (thumb and await self._is_grey(thumb)):
+                    continue
+                cached = self.cache_dir / f"pixabay-v{h['id']}.mp4"
+                if not cached.is_file():
+                    clip = await self.client.get(h["videos"]["medium"]["url"], follow_redirects=True)
+                    clip.raise_for_status()
+                    cached.write_bytes(clip.content)
+                self.used.add(str(h["id"]))
+                out.append(StockPhoto(cached, str(h["id"]), h["pageURL"], h.get("user") or "Pixabay contributor", duration_s=float(h["duration"])))
+                if len(out) == n:
+                    break
+            return out
+        except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
+            log.warning("pixabay video search failed for %r", query, exc_info=True)
+            return []
+
     async def search_photo(self, query: str) -> StockPhoto | None:
         """The best-ranked colour photo not used before (two scenes with similar queries got the same photo)."""
         try:
             resp = await self.client.get("/api/", params={"key": self.api_key, "q": query[:100], "image_type": "photo",
                                                           "orientation": "vertical", "safesearch": "true", "per_page": 20})
             resp.raise_for_status()
-            # Pixabay ranks loosely ("tv remote under pillow" -> a yacht): keep hits whose tags cover >= 60% of the content
-            # words; "asian" only ranks ("asian boy dishes" must not settle for an asian boy on a beach)
-            want = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in self.STOPWORDS}
-            core = want - {"asian"}
-            scored = []
-            for i, h in enumerate(resp.json().get("hits") or []):
-                tags = {w.rstrip("s") for w in re.findall(r"[a-z0-9]+", h.get("tags", "").lower())}
-                if core and sum(1 for w in core if w in tags) >= math.ceil(0.6 * len(core)):
-                    scored.append((-len(want & tags), i, h))
             hit = None
-            for _, _, h in sorted(scored, key=lambda x: x[:2]):
+            for h in self._ranked(query, resp.json().get("hits") or []):
                 if str(h["id"]) not in self.used and not await self._is_grey(h["previewURL"]):
                     hit = h
                     break
@@ -411,9 +442,21 @@ class FixtureStock:
     def attribution(photo: "StockPhoto") -> str:
         return f"Photo by {photo.author} (fixture)"
 
-    def __init__(self, cache_dir: Path):
-        self.cache_dir = cache_dir
+    def __init__(self, cache_dir: Path, ffmpeg: str | None = None):
+        self.cache_dir, self.ffmpeg = cache_dir, ffmpeg
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    async def search_videos(self, query: str, n: int = 3) -> list[StockPhoto]:
+        """Two 4 s landscape test-pattern clips when given FFmpeg, else none (photo fallback)."""
+        if not self.ffmpeg:
+            return []
+        out = []
+        for k in range(min(n, 2)):
+            path = self.cache_dir / f"fixture-{hashlib.sha256(query.encode()).hexdigest()[:8]}-{k}.mp4"
+            if not path.is_file():
+                subprocess.run([self.ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25", "-t", "4", str(path)], check=True)
+            out.append(StockPhoto(path, f"fixture-{k}", "https://example.com/fixture-video", "Fixture Videographer", duration_s=4.0))
+        return out
 
     async def search_photo(self, query: str) -> StockPhoto | None:
         from PIL import Image
@@ -466,7 +509,7 @@ def build_stock(s: Settings):
     if s.stock_provider == "local":
         return LocalStock(s.local_stock_dir)
     if s.stock_provider == "fixture":
-        return FixtureStock(s.storage_dir / "stock_cache")
+        return FixtureStock(s.storage_dir / "stock_cache", s.ffmpeg_path)
     if s.stock_provider == "pixabay":
         if not (s.pixabay_api_key and s.pixabay_api_key.get_secret_value()):
             log.warning("STOCK_PROVIDER=pixabay but PIXABAY_API_KEY is empty; every scene will fall back to a title card")

@@ -5,6 +5,7 @@ Walking skeleton (BACKLOG A.1): SCRIPT -> VOICE -> VISUALS -> SUBTITLES -> RENDE
 """
 import asyncio
 import hashlib
+import math
 import re
 import json
 import shutil
@@ -30,6 +31,8 @@ LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
 # the observed rate; revise this from those numbers. en unmeasured.
 SYLLABLES_PER_S = {"vi": 2.2, "en": 2.2}
 MUSIC_EXT = {".mp3", ".wav", ".m4a", ".ogg"}
+CLIP_FORMATS = {"facts"}  # stock video and word-by-word captions; the other formats keep sentence cards for now
+SHOT_MS = 2000  # the facts reference videos cut every 1-2 s (REFERENCE_LIBRARY.md)
 
 
 class SchemaError(Exception):
@@ -47,6 +50,7 @@ class ScriptOut(BaseModel):
     caption: str = Field(min_length=3, max_length=2200)
     hashtags: list[str] = Field(min_length=1, max_length=15)
     scenes: list[Scene] = Field(min_length=2, max_length=12)
+    sources: list[str] = Field(default_factory=list, max_length=8)  # where each fact comes from, for the reviewer to open
 
     @field_validator("hashtags")
     @classmethod
@@ -128,7 +132,9 @@ def script_checks(script: ScriptOut, job: ContentJob, est_s: float) -> list[dict
         c("experience_claims", job.format != "gadget" or not (exp := experience_claims([x for s in script.scenes for x in (s.narration, s.on_screen_text)] + [script.caption])),
           "no experience or before/after claims", ", ".join(exp) if job.format == "gadget" and exp else "none",
           "A gadget script must not narrate a test or result the operator has not actually done and told us about."),
-        c("numbers_to_verify", not digits, "no figures", f"{len(digits)} scene(s) with figures", "Every number in the narration must be verified before approval."),
+        c("sources", job.format != "facts" or bool(script.sources), "a source for the facts", f"{len(script.sources)} source(s)",
+          "A facts script names where its facts come from, so the reviewer can check them."),
+        c("numbers_to_verify",not digits, "no figures", f"{len(digits)} scene(s) with figures", "Every number in the narration must be verified before approval."),
     ]
 
 
@@ -164,7 +170,7 @@ async def stage_script(ctx: dict) -> dict:
     if job.operator_notes:  # regeneration: the operator's feedback and the draft it refers to
         prompt += f"\n\nThe operator reviewed a previous draft and asked for these changes:\n{job.operator_notes}"
         if ctx.get("previous"):
-            prev = {k: ctx["previous"][k] for k in ("title", "caption", "hashtags", "scenes") if k in ctx["previous"]}
+            prev = {k: ctx["previous"][k] for k in ("title", "caption", "hashtags", "scenes", "sources") if k in ctx["previous"]}
             prompt += "\n\nPrevious draft (JSON):\n" + json.dumps(prev, ensure_ascii=False)[:4000]
         prompt += "\n\nWrite a new draft that applies the feedback and keeps what the operator did not mention."
     log = {"prompt": prompt, "responses": []}
@@ -219,9 +225,27 @@ async def stage_visuals(ctx: dict) -> dict:
     stage's sentence boundaries, and a scene's cards together cover the scene's voice span."""
     s, scenes, stock, vo = ctx["settings"], ctx["up"]["SCRIPT"]["scenes"], ctx.get("stock"), ctx["up"]["VOICE"]
     d = ctx["dir"] / "visuals" / "cards"
+    # clip formats: stock video shots of at most SHOT_MS instead, the words go on screen as word-by-word captions at
+    # render, so a scene without clips gets text-free cards
+    clips_on = ctx["job"].format in CLIP_FORMATS and hasattr(stock, "search_videos")
     assets, stock_hits = [], 0
     for i, sc in enumerate(scenes):
         span = vo["scenes"][i]
+        if clips := await stock.search_videos(sc.get("visual_query") or sc["on_screen_text"]) if clips_on else []:
+            stock_hits += 1
+            n = max(1, math.ceil((span["end_ms"] - span["start_ms"]) / SHOT_MS))
+            step = (span["end_ms"] - span["start_ms"]) / n
+            for k in range(n):
+                clip = clips[k % len(clips)]
+                # a clip used twice in a scene plays a later part of itself the second time
+                offset = min(0.5 + k // len(clips) * step / 1000, max(0.0, (clip.duration_s or 0) - step / 1000))
+                assets.append({"kind": "stock_video", "source_provider": stock.name, "source_url": clip.source_url, "source_id": clip.source_id,
+                               "author": clip.author, "licence": stock.licence, "licence_url": stock.licence_url,
+                               "attribution_required": False, "attribution_text": stock.attribution(clip),
+                               "scene_index": i, "order_index": len(assets), "start_ms": span["start_ms"] + round(k * step),
+                               "end_ms": span["start_ms"] + round((k + 1) * step), "path": rel(s, clip.path), "clip_offset_s": round(offset, 2),
+                               "width": media.W, "height": media.H})
+            continue
         segs = [x for x in vo["segments"] if x["scene_index"] == i] or [{"text": sc["narration"]}]
         bounds = [span["start_ms"]] + [x["start_ms"] for x in segs[1:]] + [span["end_ms"]]
         for k in range(1, len(bounds)):  # clamp inside the scene and keep the order; a scene's cards sum to its span
@@ -230,20 +254,22 @@ async def stage_visuals(ctx: dict) -> dict:
         stock_hits += bool(photo)
         words = media.plain_words(sc["on_screen_text"])
         for k, seg in enumerate(segs):
+            text = "" if clips_on else seg["text"]
             p = d / f"{len(assets):02}.png"
             timing = {"scene_index": i, "order_index": len(assets), "start_ms": bounds[k], "end_ms": bounds[k + 1], "path": rel(s, p),
                       "width": media.W, "height": media.H, "font": Path(s.font_path).name}
             if photo:
-                await asyncio.to_thread(media.render_photo_card, photo.path, seg["text"], i, s.font_path, p, words)
+                await asyncio.to_thread(media.render_photo_card, photo.path, text, i, s.font_path, p, words)
                 assets.append({"kind": "stock_image", "source_provider": stock.name, "source_url": photo.source_url, "source_id": photo.source_id,
                                "author": photo.author, "licence": stock.licence, "licence_url": stock.licence_url,
                                "attribution_required": False, "attribution_text": stock.attribution(photo)} | timing)
             else:
-                await asyncio.to_thread(media.render_card, seg["text"], i, s.font_path, p, words)
+                await asyncio.to_thread(media.render_card, text, i, s.font_path, p, words)
                 # licence ledger (PRD D3): generated cards are ours; the font is the only third-party input
                 assets.append({"kind": "title_card", "source_provider": "title_card", "licence": "generated", "attribution_required": False,
                                "attribution_text": None} | timing)
-    return {"assets": assets, "stock_hits": stock_hits, "_meta": {"provider": stock.name if stock else "title_card", "model": "pillow"}}
+    return {"assets": assets, "stock_hits": stock_hits, "captions": "words" if clips_on else "cards",
+            "_meta": {"provider": stock.name if stock else "title_card", "model": "pillow"}}
 
 
 def pick_music(s: Settings, job_id: str) -> Path | None:
@@ -259,7 +285,9 @@ async def stage_subtitles(ctx: dict) -> dict:
     d = ctx["dir"] / "subtitles"
     srt, vtt = d / f"{job.language}.srt", d / f"{job.language}.vtt"
     media.write_subtitles(cues, srt, vtt)
-    return {"srt_path": rel(s, srt), "vtt_path": rel(s, vtt), "cue_count": len(cues),
+    ass = d / f"{job.language}.ass"
+    media.write_word_captions(ctx["up"]["VOICE"]["segments"], ass)
+    return {"srt_path": rel(s, srt), "vtt_path": rel(s, vtt), "ass_path": rel(s, ass), "cue_count": len(cues),
             "max_chars_per_line": max((len(l) for c in cues for l in c["lines"]), default=0),
             "max_cue_duration_s": round(max((c["end_ms"] - c["start_ms"] for c in cues), default=0) / 1000, 2),
             "_meta": {"provider": "subtitle_builder"}}
@@ -271,12 +299,13 @@ async def stage_render(ctx: dict) -> dict:
     durs = [(a["end_ms"] - a["start_ms"]) / 1000 for a in up["VISUALS"]["assets"]]
     d = ctx["dir"] / "render"
     out, thumb = d / "final.mp4", d / "thumb.jpg"
-    burn = ctx["job"].burn_subtitles
+    words = up["VISUALS"].get("captions") == "words"  # word captions are the clip formats' only text, so always burned
+    burn = words or ctx["job"].burn_subtitles
+    subs = s.storage_dir / up["SUBTITLES"]["ass_path" if words else "srt_path"] if burn else None
     music = pick_music(s, ctx["job"].id)
     cmd = await asyncio.to_thread(media.render_video, s.ffmpeg_path, cards, durs, s.storage_dir / up["VOICE"]["audio_path"], out,
-                                  s.storage_dir / up["SUBTITLES"]["srt_path"] if burn else None, s.font_path if burn else None, music)
-    from PIL import Image
-    Image.open(cards[0]).convert("RGB").save(thumb, quality=88)
+                                  subs, s.font_path if burn else None, music, [a.get("clip_offset_s", 0.0) for a in up["VISUALS"]["assets"]])
+    await asyncio.to_thread(media.run, [s.ffmpeg_path, "-y", "-v", "error", "-ss", "0.3", "-i", str(out), "-frames:v", "1", "-q:v", "3", str(thumb)])
     info = media.probe(s.ffprobe_path, out)
     v = next((x for x in info["streams"] if x["codec_type"] == "video"), {})
     a = next((x for x in info["streams"] if x["codec_type"] == "audio"), {})
@@ -315,8 +344,8 @@ async def stage_quality(ctx: dict) -> dict:
               "<=32 chars/line, <=7s/cue", f"{sub['max_chars_per_line']} chars, {sub['max_cue_duration_s']}s", "Subtitle lines are short enough to read."),
         check("platform_limits", "warning", len(sc["title"]) <= 90 and len(sc["caption"]) <= 300 and 3 <= len(sc["hashtags"]) <= 8,
               "title<=90, caption<=300, 3-8 tags", f"{len(sc['title'])}, {len(sc['caption'])}, {len(sc['hashtags'])}", "Title, caption and hashtags fit every platform."),
-        check("claim_grounding", "warning", False, "sourced claims", "no research stage yet",
-              "Claims are not source-checked in this version; verify facts before approving."),
+        check("claim_grounding", "warning", False, "sourced claims", f"{len(sc.get('sources', []))} source(s) named by the writer, none opened",
+              "Claims are not source-checked in this version: open the listed sources and verify the facts before approving."),
     ]
     blocking = [c for c in checks if c["severity"] == "error" and not c["passed"]]
     return {"checks": checks, "passed": not blocking, "_meta": {"provider": "quality_gate"}}

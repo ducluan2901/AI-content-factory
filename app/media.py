@@ -121,22 +121,28 @@ SUB_SIZE, SUB_MARGIN_V = 11, 75  # ~73 px text, bottom edge ~500 px up: clear of
 
 def subtitle_filter(srt: Path, font_path: str, workdir: Path) -> str:
     """Burn-in filter. libass wants Windows paths escaped ('C\\:/...'), so instead copy the SRT and the font next
-    to the output and refer to them by relative name; the caller runs ffmpeg with cwd=workdir."""
+    to the output and refer to them by relative name; the caller runs ffmpeg with cwd=workdir. Takes an ASS file too:
+    it carries its own style, so only the font name is forced, to match the font copied here."""
     from PIL import ImageFont
 
     fonts = workdir / "fonts"
     fonts.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(font_path, fonts / Path(font_path).name)
-    shutil.copyfile(srt, workdir / "burn.srt")
+    name = f"burn{srt.suffix}"
+    shutil.copyfile(srt, workdir / name)
     family = ImageFont.truetype(font_path, 20).getname()[0]
+    if srt.suffix == ".ass":
+        return f"subtitles={name}:fontsdir=fonts:force_style='FontName={family}'"
     style = (f"FontName={family},Bold=1,FontSize={SUB_SIZE},Alignment=2,MarginV={SUB_MARGIN_V},"
              "MarginL=14,MarginR=14,Outline=2,Shadow=0")
-    return f"subtitles=burn.srt:fontsdir=fonts:force_style='{style}'"
+    return f"subtitles={name}:fontsdir=fonts:force_style='{style}'"
 
 
 def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path,
-                 srt: Path | None = None, font_path: str | None = None, music: Path | None = None) -> list[str]:
-    """Each still lands with a punch zoom and then drifts in slowly, before concatenation.
+                 srt: Path | None = None, font_path: str | None = None, music: Path | None = None,
+                 offsets: list[float] | None = None) -> list[str]:
+    """Each still lands with a punch zoom and then drifts in slowly, before concatenation. An .mp4 in `cards` is a
+    stock clip instead: it plays from its offset (seconds), cropped to fill 9:16, held on its last frame if too short.
     Each still is a single-frame input and zoompan's d= turns that one frame into exactly d output frames, which
     ends the clip. (A looped input made every clip endless, so concat never left scene 1: the first real video showed
     scene 1's card for its whole length while a duration-only test passed.)
@@ -146,16 +152,24 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
     cards, audio, out = [c.resolve() for c in cards], audio.resolve(), out.resolve()
     srt = srt.resolve() if srt else None
     cmd = [ffmpeg, "-y", "-v", "error"]
-    for card in cards:
-        cmd += ["-i", str(card)]  # one frame; no -loop, see the docstring
+    offsets = offsets or [0.0] * len(cards)
+    for card, d, off in zip(cards, durations, offsets):
+        if card.suffix == ".mp4":
+            cmd += ["-ss", f"{off:.2f}", "-t", f"{d + 1:.2f}", "-i", str(card)]
+        else:
+            cmd += ["-i", str(card)]  # one frame; no -loop, see the docstring
     cmd += ["-i", str(audio)]
     n = len(cards)
     parts = []
     for i, d in enumerate(durations):
         frames = max(1, round(d * FPS))
+        if cards[i].suffix == ".mp4":
+            parts.append(f"[{i}:v]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps={FPS},setsar=1,"
+                         f"tpad=stop_mode=clone:stop_duration={d:.3f},trim=end_frame={frames},setpts=PTS-STARTPTS[v{i}]")
+            continue
         z = (f"if(lt(on,{PUNCH_FRAMES}),{PUNCH_ZOOM}-{(PUNCH_ZOOM - 1) / PUNCH_FRAMES:.5f}*on,"
              f"min(1+{DRIFT_PER_FRAME}*(on-{PUNCH_FRAMES}),{ZOOM_MAX}))")
-        parts.append(f"[{i}:v]scale={W * 2}:{H * 2},zoompan=z='{z}':d={frames}:s={W}x{H}:fps={FPS}[v{i}]")
+        parts.append(f"[{i}:v]scale={W * 2}:{H * 2},zoompan=z='{z}':d={frames}:s={W}x{H}:fps={FPS},setsar=1[v{i}]")
     labels = "".join(f"[v{i}]" for i in range(n))
     burn = f",{subtitle_filter(srt, font_path, out.parent)}" if srt else ""
     parts.append(f"{labels}concat=n={n}:v=1:a=0{burn},format=yuv420p[v]")
@@ -242,3 +256,49 @@ def normalize_loudness(ffmpeg: str, in_path: Path, out_path: Path) -> float | No
 def write_subtitles(cues: list[dict], srt: Path, vtt: Path) -> None:
     srt.write_text("\n".join(f"{i}\n{_ts(c['start_ms'], ',')} --> {_ts(c['end_ms'], ',')}\n" + "\n".join(c["lines"]) + "\n" for i, c in enumerate(cues, 1)), encoding="utf-8")
     vtt.write_text("WEBVTT\n\n" + "\n".join(f"{_ts(c['start_ms'], '.')} --> {_ts(c['end_ms'], '.')}\n" + "\n".join(c["lines"]) + "\n" for c in cues), encoding="utf-8")
+
+
+WORD_CHUNK = 3  # words on screen at once
+WORD_COLOR = "&H3CC4FF&"  # HIGHLIGHT in ASS's blue-green-red order
+ASS_HEADER = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {W}
+PlayResY: {H}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Word,Arial,140,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,9,3,5,{SAFE_X},{SAFE_X},0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+def _ass_ts(ms: float) -> str:
+    cs = int(ms) // 10
+    return f"{cs // 360000}:{cs // 6000 % 60:02}:{cs // 100 % 60:02}.{cs % 100:02}"
+
+
+def write_word_captions(segments: list[dict], out: Path) -> int:
+    """Word-by-word captions, the look of the facts reference videos: up to WORD_CHUNK words big in the middle of the
+    screen, the word being spoken in colour. TTS gives sentence boundaries only, so each word gets a share of its
+    sentence's span by length. Returns the number of caption events."""
+    events, prev_end = [], 0
+    for seg in segments:
+        words = re.sub(r"[{}\\]", "", seg["text"]).split()  # braces and backslashes are ASS override syntax
+        if not words:
+            continue
+        t0 = t = max(seg["start_ms"], prev_end)  # TTS sentence spans can overlap by a few ms
+        span, total, done = max(seg["end_ms"] - t, 1), sum(len(w) + 1 for w in words), 0
+        for c in range(0, len(words), WORD_CHUNK):
+            chunk = words[c:c + WORD_CHUNK]
+            for k, w in enumerate(chunk):
+                done += len(w) + 1
+                end = t0 + span * done // total  # cumulative, so the last word ends exactly with the sentence
+                text = " ".join(f"{{\\c{WORD_COLOR}}}{x}{{\\c&HFFFFFF&}}" if j == k else x for j, x in enumerate(chunk))
+                events.append(f"Dialogue: 0,{_ass_ts(t)},{_ass_ts(end)},Word,,0,0,0,,{text}")
+                t = end
+        prev_end = t
+    out.write_text(ASS_HEADER + "\n".join(events) + "\n", encoding="utf-8")
+    return len(events)

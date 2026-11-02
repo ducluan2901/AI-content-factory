@@ -53,7 +53,7 @@ def test_script_review_pause_records_prompt_version_and_checks(env):
     assert d["job"]["status"] == "SCRIPT_REVIEW" and set(d["outputs"]) == {"SCRIPT"}
     run = next(r for r in d["runs"] if r["stage"] == "SCRIPT")
     assert run["prompt_version"].startswith("script@") and "format_facts@" in run["prompt_version"]
-    assert "curiosity story" in llm.prompts[0] and "AI & Technology" not in llm.prompts[0]
+    assert "numbered facts list" in llm.prompts[0] and "AI & Technology" not in llm.prompts[0]
     rules = {x["rule"]: x for x in d["outputs"]["SCRIPT"]["checks"]}
     assert {"estimated_duration", "scene_count", "hook_length", "numbers_to_verify"} <= set(rules)
     assert rules["numbers_to_verify"]["passed"] is False  # the fixture narration says "Năm 2026"
