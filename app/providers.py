@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import subprocess
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -186,6 +187,78 @@ class EdgeTTS:
                 last = e
                 await asyncio.sleep(1.5 * (attempt + 1))
         raise ProviderError(f"edge-tts failed after 5 tries: {last}") from last
+
+
+class FptTTS:
+    """FPT.AI text-to-speech v5: native Vietnamese voices from three regions. The API returns a link that becomes
+    downloadable after 5 s to 2 min and gives no timings, so each sentence is voiced on its own and the clips are
+    joined: every sentence then has an exact start for the per-sentence cards."""
+
+    name = "fpt_tts"
+    URL = "https://api.fpt.ai/hmi/tts/v5"
+
+    def __init__(self, api_key: str, voice: str, speed: int, ffmpeg: str, ffprobe: str, client: httpx.AsyncClient | None = None,
+                 poll_s: float = 1.5, wait_s: float = 150):
+        self.api_key, self.voice, self.speed, self.ffmpeg, self.ffprobe = api_key, voice, speed, ffmpeg, ffprobe
+        self.voices = {"vi": voice}
+        self.client = client or httpx.AsyncClient(timeout=30)
+        self.poll_s, self.wait_s = poll_s, wait_s
+
+    @staticmethod
+    def sentences(text: str) -> list[str]:
+        """Split at sentence ends; a fragment under 3 characters (the API minimum) joins the next one."""
+        parts, carry = [], ""
+        for s in re.split(r"(?<=[.!?…])\s+", text.strip()):
+            s = f"{carry} {s}".strip() if carry else s
+            if len(s) < 3:
+                carry = s
+            else:
+                parts.append(s)
+                carry = ""
+        if carry:
+            parts = parts[:-1] + [f"{parts[-1]} {carry}"] if parts else [carry]
+        return parts
+
+    async def _voice_one(self, sentence: str, voice: str, out: Path) -> None:
+        r = await self.client.post(self.URL, content=sentence.encode("utf-8"),
+                                   headers={"api_key": self.api_key, "voice": voice, "speed": str(self.speed), "format": "mp3"})
+        if r.status_code in (401, 403):
+            raise ProviderRejected(f"FPT.AI refused the key ({r.status_code}); check FPT_AI_API_KEY")
+        if r.status_code >= 400:
+            raise ProviderError(f"FPT.AI HTTP {r.status_code}: {r.text[:200]}")
+        body = r.json()
+        if body.get("error") != 0 or not body.get("async"):
+            raise ProviderError(f"FPT.AI error {body.get('error')}: {body.get('message')}")
+        end = time.monotonic() + self.wait_s
+        while time.monotonic() < end:  # the docs do not say what the link returns before it is ready: anything but a non-empty 200 means wait
+            a = await self.client.get(body["async"], follow_redirects=True)
+            if a.status_code == 200 and a.content:
+                out.write_bytes(a.content)
+                return
+            await asyncio.sleep(self.poll_s)
+        raise ProviderError(f"FPT.AI audio not ready after {self.wait_s:.0f} s (request {body.get('request_id')})")
+
+    def _duration_ms(self, path: Path) -> int:
+        out = subprocess.run([self.ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+                             capture_output=True, text=True, check=True).stdout
+        return int(float(out) * 1000)
+
+    async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
+        if language != "vi":
+            raise ProviderRejected("FPT.AI voices are Vietnamese only")
+        voice = voice if voice in ("banmai", "lannhi", "leminh", "myan", "thuminh", "giahuy", "linhsan") else self.voice
+        clips, timings, t = [], [], 0
+        for i, s in enumerate(self.sentences(text)):
+            clip = out.with_name(f"{out.stem}_{i:02}.mp3")
+            await self._voice_one(s, voice, clip)
+            d = self._duration_ms(clip)
+            clips.append(clip)
+            timings.append({"text": s, "start_ms": t, "end_ms": t + d})
+            t += d
+        args = [self.ffmpeg, "-y", "-v", "error"] + [x for c in clips for x in ("-i", str(c))]
+        args += ["-filter_complex", "".join(f"[{i}:a]" for i in range(len(clips))) + f"concat=n={len(clips)}:v=0:a=1[a]", "-map", "[a]", str(out)]
+        await asyncio.to_thread(subprocess.run, args, check=True)
+        return TTSResult(out, timings)
 
 
 class FixtureTTS:
@@ -412,4 +485,8 @@ def build_tts(s: Settings):
         return EdgeTTS({"vi": s.tts_voice_vi, "en": s.tts_voice_en}, s.tts_rate)
     if s.tts_provider == "fixture":
         return FixtureTTS(s.ffmpeg_path)
+    if s.tts_provider == "fpt":
+        if not (s.fpt_ai_api_key and s.fpt_ai_api_key.get_secret_value()):
+            raise ValueError("TTS_PROVIDER=fpt needs FPT_AI_API_KEY in .env")
+        return FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path)
     raise ValueError(f"unknown TTS_PROVIDER {s.tts_provider}")
