@@ -17,10 +17,13 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = None  # from .env or the environment; SDK never sees .env itself
     claude_cli_path: str = "claude"
     claude_model: str = ""
-    tts_provider: str = "edge_tts"  # edge_tts | fixture
+    tts_provider: str = "edge_tts"  # edge_tts | fpt | fixture
     tts_voice_vi: str = "vi-VN-HoaiMyNeural"
     tts_voice_en: str = "en-US-AriaNeural"
     tts_rate: str = "+10%"  # edge_tts speaking rate; the default read is too even for short punchy lines
+    fpt_ai_api_key: SecretStr | None = None  # TTS_PROVIDER=fpt: key from console.fpt.ai
+    fpt_voice: str = "banmai"  # banmai, thuminh (female north), leminh (male north), myan, giahuy (central), lannhi, linhsan (female south)
+    fpt_speed: int = 0  # -3 slowest .. +3 fastest
     stock_provider: str = "pexels"  # pixabay | pexels | local | none | fixture; pixabay/pexels without a key degrade to "none"
     local_stock_dir: Path = Path("./assets/stock")  # STOCK_PROVIDER=local: your own images, matched by file name
     pexels_api_key: SecretStr | None = None
