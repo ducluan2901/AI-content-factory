@@ -197,10 +197,14 @@ class FptTTS:
 
     name = "fpt_tts"
     URL = "https://api.fpt.ai/hmi/tts/v5"
+    MKP_URL = "https://mkp-api.fptcloud.com/v1/audio/speech"  # FPT AI Marketplace, model FPT.TTS-pro
+    VOICES = {"banmai", "lannhi", "leminh", "myan", "thuminh", "giahuy", "linhsan",  # v5
+              "fci_vietkhoa", "fci_xuantoan", "fci_phuongan", "std_banmai", "std_quanganh"}  # FPT.TTS-pro
 
     def __init__(self, api_key: str, voice: str, speed: int, ffmpeg: str, ffprobe: str, client: httpx.AsyncClient | None = None,
                  poll_s: float = 1.5, wait_s: float = 150):
         self.api_key, self.voice, self.speed, self.ffmpeg, self.ffprobe = api_key, voice, speed, ffmpeg, ffprobe
+        self.marketplace = api_key.startswith("sk-")  # FPT AI Marketplace keys; console.fpt.ai keys have no prefix
         self.voices = {"vi": voice}
         self.client = client or httpx.AsyncClient(timeout=30)
         self.poll_s, self.wait_s = poll_s, wait_s
@@ -221,6 +225,16 @@ class FptTTS:
         return parts
 
     async def _voice_one(self, sentence: str, voice: str, out: Path) -> None:
+        if self.marketplace:  # OpenAI-style speech endpoint: answers with the audio itself
+            r = await self.client.post(self.MKP_URL, headers={"Authorization": f"Bearer {self.api_key}"},
+                                       json={"model": "FPT.TTS-pro", "input": sentence, "voice": voice, "response_format": "mp3",
+                                             "speed": 1 + 0.1 * self.speed})
+            if r.status_code in (401, 403):
+                raise ProviderRejected(f"FPT AI Marketplace refused the key ({r.status_code}); check FPT_AI_API_KEY")
+            if r.status_code >= 400 or not r.content:
+                raise ProviderError(f"FPT AI Marketplace HTTP {r.status_code}: {r.text[:200]}")
+            out.write_bytes(r.content)
+            return
         r = await self.client.post(self.URL, content=sentence.encode("utf-8"),
                                    headers={"api_key": self.api_key, "voice": voice, "speed": str(self.speed), "format": "mp3"})
         if r.status_code in (401, 403):
@@ -247,7 +261,7 @@ class FptTTS:
     async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
         if language != "vi":
             raise ProviderRejected("FPT.AI voices are Vietnamese only")
-        voice = voice if voice in ("banmai", "lannhi", "leminh", "myan", "thuminh", "giahuy", "linhsan") else self.voice
+        voice = voice if voice in self.VOICES else self.voice
         clips, timings, t = [], [], 0
         for i, s in enumerate(self.sentences(text)):
             clip = out.with_name(f"{out.stem}_{i:02}.mp3")
