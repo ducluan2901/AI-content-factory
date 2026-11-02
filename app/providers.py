@@ -452,7 +452,7 @@ class PixabayProvider:
         Empty on no result or any failure: the caller falls back to a photo (BACKLOG R4)."""
         try:
             resp = await self.client.get("/api/videos/", params={"key": self.api_key, "q": query[:100], "video_type": "film",
-                                                                 "safesearch": "true", "per_page": 20})
+                                                                 "safesearch": "true", "per_page": 50})
             resp.raise_for_status()
             hits = [h for h in resp.json().get("hits") or [] if h.get("duration", 0) >= 3 and h.get("videos", {}).get("medium", {}).get("url")]
             out = []

@@ -509,3 +509,26 @@ def test_facts_job_cuts_stock_clips_every_two_seconds_and_burns_word_captions(tm
         assert vis["assets"][0]["start_ms"] == 0 and vis["assets"][-1]["end_ms"] == vo["scenes"][-1]["end_ms"]
         assert all(a["end_ms"] == b["start_ms"] for a, b in zip(vis["assets"], vis["assets"][1:]))
         assert d["outputs"]["RENDER"]["subtitles_burned"] is True and d["outputs"]["SUBTITLES"]["ass_path"].endswith("vi.ass")
+
+
+@needs_ffmpeg
+def test_a_scene_whose_search_runs_dry_reuses_earlier_clips_not_a_blank_card(tmp_path):
+    class DryAfterOne(FixtureStock):
+        calls = 0
+
+        async def search_videos(self, query, n=3):
+            DryAfterOne.calls += 1
+            return await super().search_videos(query, n) if DryAfterOne.calls == 1 else []
+
+        async def search_photo(self, query):
+            return None
+
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path), stock=DryAfterOne(tmp_path / "cache", s.ffmpeg_path))
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "format": "facts", "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+    assets = d["outputs"]["VISUALS"]["assets"]
+    assert all(a["kind"] == "stock_video" for a in assets) and {a["source_id"] for a in assets} == {"fixture-0", "fixture-1"}
+    later = [a for a in assets if a["scene_index"] > 0]
+    assert later and all(a["clip_offset_s"] >= 1.0 for a in later)  # the reused clips play from their middle

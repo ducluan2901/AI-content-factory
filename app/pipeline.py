@@ -255,17 +255,25 @@ async def stage_visuals(ctx: dict) -> dict:
     # clip formats: stock video shots of at most SHOT_MS instead, the words go on screen as word-by-word captions at
     # render, so a scene without clips gets text-free cards
     clips_on = ctx["job"].format in CLIP_FORMATS and hasattr(stock, "search_videos")
-    assets, stock_hits = [], 0
+    assets, stock_hits, pool = [], 0, []
     for i, sc in enumerate(scenes):
         span = vo["scenes"][i]
-        if clips := await stock.search_videos(sc.get("visual_query") or sc["on_screen_text"]) if clips_on else []:
-            stock_hits += 1
+        query = sc.get("visual_query") or sc["on_screen_text"]
+        clips = await stock.search_videos(query) if clips_on else []
+        photo = None if clips else await stock.search_photo(query) if stock else None
+        stock_hits += bool(clips or photo)
+        reused = clips_on and not clips and not photo and bool(pool)
+        if reused:  # the search ran dry (every octopus clip already used): an earlier clip, later in, beats a blank card
+            clips = pool[-3:]
+        pool += [] if reused else clips
+        if clips:
             n = max(1, math.ceil((span["end_ms"] - span["start_ms"]) / SHOT_MS))
             step = (span["end_ms"] - span["start_ms"]) / n
             for k in range(n):
                 clip = clips[k % len(clips)]
-                # a clip used twice in a scene plays a later part of itself the second time
-                offset = min(0.5 + k // len(clips) * step / 1000, max(0.0, (clip.duration_s or 0) - step / 1000))
+                # a clip used again plays a later part of itself
+                start = (clip.duration_s or 0) / 2 if reused else 0.5
+                offset = min(start + k // len(clips) * step / 1000, max(0.0, (clip.duration_s or 0) - step / 1000))
                 assets.append({"kind": "stock_video", "source_provider": stock.name, "source_url": clip.source_url, "source_id": clip.source_id,
                                "author": clip.author, "licence": stock.licence, "licence_url": stock.licence_url,
                                "attribution_required": False, "attribution_text": stock.attribution(clip),
@@ -277,8 +285,6 @@ async def stage_visuals(ctx: dict) -> dict:
         bounds = [span["start_ms"]] + [x["start_ms"] for x in segs[1:]] + [span["end_ms"]]
         for k in range(1, len(bounds)):  # clamp inside the scene and keep the order; a scene's cards sum to its span
             bounds[k] = min(max(bounds[k], bounds[k - 1]), span["end_ms"])
-        photo = await stock.search_photo(sc.get("visual_query") or sc["on_screen_text"]) if stock else None
-        stock_hits += bool(photo)
         words = media.plain_words(sc["on_screen_text"])
         for k, seg in enumerate(segs):
             text = "" if clips_on else seg["text"]
