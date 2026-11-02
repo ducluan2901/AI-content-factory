@@ -401,6 +401,52 @@ class PexelsProvider:
             return None
 
 
+class ClipCheck:
+    """Claude Haiku looks at a stock search's candidate frames and keeps those that really show the scene's subject:
+    Pixabay tags a fairground ride, a shark and grilled squid "octopus". One call per search, frames shrunk to 320 px
+    (about 8 x 100 tokens, ~$0.0002). Returns None on any failure, and the caller keeps the tag ranking."""
+
+    MODEL = "claude-haiku-5-5"
+
+    def __init__(self, api_key: str | None = None, client=None):
+        import anthropic
+
+        self.client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=2)
+        self.cost_usd = 0.0  # running total, read by the visuals stage
+
+    @staticmethod
+    def _small(image: bytes) -> str:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image)).convert("RGB")
+        img.thumbnail((320, 320))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return base64.b64encode(buf.getvalue()).decode()
+
+    async def keep(self, query: str, frames: list[bytes]) -> list[int] | None:
+        """Indexes of the frames that show the subject, best first."""
+        content = []
+        for i, f in enumerate(frames):
+            content += [{"type": "text", "text": f"Frame {i}:"},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": self._small(f)}}]
+        content.append({"type": "text", "text": (
+            f'Each frame is from a stock video clip found for a short-video scene described as "{query}". Keep only frames '
+            "whose main subject is that, as real footage: not a toy, ride, statue, drawing, logo, or the thing cooked as food, "
+            "unless the description asks for it, and not a different animal or object. Order the kept frames best first. "
+            'Answer with JSON only: {"keep": [frame numbers]}')})
+        try:
+            resp = await self.client.beta.messages.create(model=self.MODEL, max_tokens=300, thinking={"type": "disabled"},
+                                                          output_config={"effort": "low"}, messages=[{"role": "user", "content": content}])
+            p_in, p_out = PRICES.get(resp.model, PRICES[self.MODEL])
+            self.cost_usd += (resp.usage.input_tokens * p_in + resp.usage.output_tokens * p_out) / 1e6
+            keep = extract_json("".join(b.text for b in resp.content if b.type == "text")).get("keep", [])
+            return list(dict.fromkeys(i for i in keep if isinstance(i, int) and 0 <= i < len(frames)))
+        except Exception:  # noqa: BLE001 - an unchecked clip is a degrade, never a stage failure
+            log.warning("clip check failed for %r", query, exc_info=True)
+            return None
+
+
 class PixabayProvider:
     """Free stock photos from Pixabay (free key, issued at once on sign-up; Pexels has paused new keys).
     Pixabay Content License: free use, no attribution required. Images are downloaded, never hot-linked.
@@ -415,21 +461,27 @@ class PixabayProvider:
     def attribution(photo: "StockPhoto") -> str:
         return f"Image by {photo.author} on Pixabay"
 
-    def __init__(self, api_key: str, cache_dir: Path, client: httpx.AsyncClient | None = None):
-        self.api_key, self.cache_dir = api_key, cache_dir
+    CHECK_MAX = 8  # clip candidates looked at per search
+
+    def __init__(self, api_key: str, cache_dir: Path, client: httpx.AsyncClient | None = None, check: "ClipCheck | None" = None):
+        self.api_key, self.cache_dir, self.check = api_key, cache_dir, check
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.client = client or httpx.AsyncClient(base_url="https://pixabay.com", timeout=15)
         # shortcut: remembered per process, so a restart may reuse a photo; fine at a few videos a day
         self.used: set[str] = set()
 
-    async def _is_grey(self, preview_url: str) -> bool:
-        """Black-and-white photos look like a different video next to colour ones: judge on the 150 px preview."""
+    @staticmethod
+    def _grey(image: bytes) -> bool:
+        """Black-and-white footage looks like a different video next to colour: judged on a small preview."""
         from PIL import Image
 
+        sat = Image.open(io.BytesIO(image)).convert("HSV").getchannel("S")
+        return sum(sat.getdata()) / (sat.width * sat.height) < 25
+
+    async def _is_grey(self, preview_url: str) -> bool:
         r = await self.client.get(preview_url, follow_redirects=True)
         r.raise_for_status()
-        sat = Image.open(io.BytesIO(r.content)).convert("HSV").getchannel("S")
-        return sum(sat.getdata()) / (sat.width * sat.height) < 25
+        return self._grey(r.content)
 
     def _ranked(self, query: str, hits: list[dict], bonus=lambda h: 0) -> list[dict]:
         """Pixabay ranks loosely ("tv remote under pillow" -> a yacht): keep hits whose tags cover >= 60% of the content
@@ -455,11 +507,27 @@ class PixabayProvider:
                                                                  "safesearch": "true", "per_page": 50})
             resp.raise_for_status()
             hits = [h for h in resp.json().get("hits") or [] if h.get("duration", 0) >= 3 and h.get("videos", {}).get("medium", {}).get("url")]
-            out = []
+            cands = []  # (hit, thumbnail bytes): fresh colour clips, best tag match first
             for h in self._ranked(query, hits, bonus=lambda h: h["videos"]["medium"].get("height", 0) > h["videos"]["medium"].get("width", 1)):
-                thumb = h["videos"]["medium"].get("thumbnail")
-                if str(h["id"]) in self.used or (thumb and await self._is_grey(thumb)):
+                if str(h["id"]) in self.used:
                     continue
+                thumb = None
+                if url := h["videos"]["medium"].get("thumbnail"):
+                    r = await self.client.get(url, follow_redirects=True)
+                    r.raise_for_status()
+                    thumb = r.content
+                    if self._grey(thumb):
+                        continue
+                cands.append((h, thumb))
+                if len(cands) == self.CHECK_MAX:
+                    break
+            # tags lie (an octopus-shaped fairground ride is tagged "octopus"): a model looks at the frames when configured
+            if self.check and (seen := [c for c in cands if c[1]]):
+                keep = await self.check.keep(query, [t for _, t in seen])
+                if keep is not None:
+                    cands = [seen[i] for i in keep]
+            out = []
+            for h, _ in cands:
                 cached = self.cache_dir / f"pixabay-v{h['id']}.mp4"
                 if not cached.is_file():
                     clip = await self.client.get(h["videos"]["medium"]["url"], follow_redirects=True)
@@ -586,7 +654,9 @@ def build_stock(s: Settings):
         if not (s.pixabay_api_key and s.pixabay_api_key.get_secret_value()):
             log.warning("STOCK_PROVIDER=pixabay but PIXABAY_API_KEY is empty; every scene will fall back to a title card")
             return None
-        return PixabayProvider(s.pixabay_api_key.get_secret_value(), s.storage_dir / "stock_cache")
+        key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
+        check = ClipCheck(key) if s.clip_check and key else None
+        return PixabayProvider(s.pixabay_api_key.get_secret_value(), s.storage_dir / "stock_cache", check=check)
     if s.stock_provider == "pexels":
         if not (s.pexels_api_key and s.pexels_api_key.get_secret_value()):
             log.warning("STOCK_PROVIDER=pexels but PEXELS_API_KEY is empty; every scene will fall back to a title card")

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     local_stock_dir: Path = Path("./assets/stock")  # STOCK_PROVIDER=local: your own images, matched by file name
     pexels_api_key: SecretStr | None = None
     pixabay_api_key: SecretStr | None = None  # free at pixabay.com/api/docs after sign-up
+    clip_check: bool = True  # Claude Haiku looks at stock clip frames and drops off-topic ones (~$0.0002 a search)
     music_dir: Path = Path("./assets/music")  # background tracks (mp3/wav/m4a/ogg) you have the right to use; empty = no music
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"

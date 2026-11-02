@@ -532,3 +532,47 @@ def test_a_scene_whose_search_runs_dry_reuses_earlier_clips_not_a_blank_card(tmp
     assert all(a["kind"] == "stock_video" for a in assets) and {a["source_id"] for a in assets} == {"fixture-0", "fixture-1"}
     later = [a for a in assets if a["scene_index"] > 0]
     assert later and all(a["clip_offset_s"] >= 1.0 for a in later)  # the reused clips play from their middle
+
+
+class FakeHaiku:
+    """Stands in for AsyncAnthropic: answers the clip check with a fixed keep list and records what it was shown."""
+
+    def __init__(self, answer):
+        self.answer, self.calls = answer, []
+        self.beta = self
+        self.messages = self
+
+    async def create(self, **kw):
+        from types import SimpleNamespace as NS
+
+        self.calls.append(kw)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return NS(model="claude-haiku-5-5", usage=NS(input_tokens=1000, output_tokens=20),
+                  content=[NS(type="text", text=json.dumps({"keep": self.answer}))])
+
+
+@pytest.mark.anyio
+async def test_clip_check_drops_the_frames_haiku_rejects_and_degrades_to_tags_on_failure(tmp_path):
+    from app.providers import ClipCheck
+
+    def hit(i):
+        return {"id": i, "pageURL": f"https://pixabay.com/videos/{i}", "user": "bo", "tags": "octopus, sea", "duration": 10,
+                "videos": {"medium": {"url": f"https://cdn.test/{i}.mp4", "width": 1920, "height": 1080, "thumbnail": f"https://cdn.test/{i}.jpg"}}}
+
+    def handler(request):
+        if request.url.path == "/api/videos/":
+            return httpx.Response(200, json={"hits": [hit(1), hit(2), hit(3)]})
+        return httpx.Response(200, content=tiny_jpeg() if request.url.path.endswith(".jpg") else b"mp4")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://pixabay.com")
+    haiku = FakeHaiku([2, 0, 7])  # frame 1 is the fairground ride; 7 does not exist
+    check = ClipCheck(client=haiku)
+    prov = PixabayProvider("k", tmp_path / "cache", client=client, check=check)
+    assert [c.source_id for c in await prov.search_videos("octopus sea")] == ["3", "1"]  # Haiku's order, 2 dropped
+    sent = haiku.calls[0]
+    assert sent["model"] == "claude-haiku-5-5" and sum(b["type"] == "image" for b in sent["messages"][0]["content"]) == 3
+    assert abs(check.cost_usd - (1000 * 0.10 + 20 * 0.50) / 1e6) < 1e-12
+
+    broken = PixabayProvider("k", tmp_path / "cache2", client=client, check=ClipCheck(client=FakeHaiku(RuntimeError("down"))))
+    assert [c.source_id for c in await broken.search_videos("octopus sea")] == ["1", "2", "3"]  # the check failing never costs the clips

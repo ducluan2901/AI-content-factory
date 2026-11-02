@@ -22,7 +22,7 @@ from app import media
 from app.config import ROOT, Settings
 from app.db import Approval, Channel, ContentJob, StageRun, latest_ok_run, now
 from app.planner import FORMATS
-from app.providers import ProviderError, extract_json
+from app.providers import ClipCheck, ProviderError, extract_json
 
 LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
 # Edge HoaiMy at the default rate, measured: 3.3 syll/s on a 54 s script of long sentences, 2.44 on a 33 s comedy script
@@ -256,6 +256,8 @@ async def stage_visuals(ctx: dict) -> dict:
     # render, so a scene without clips gets text-free cards
     clips_on = ctx["job"].format in CLIP_FORMATS and hasattr(stock, "search_videos")
     assets, stock_hits, pool = [], 0, []
+    check = getattr(stock, "check", None)
+    spent0 = check.cost_usd if check else 0.0  # shortcut: two jobs in VISUALS at once would share this delta; jobs run one at a time today
     for i, sc in enumerate(scenes):
         span = vo["scenes"][i]
         query = sc.get("visual_query") or sc["on_screen_text"]
@@ -302,7 +304,8 @@ async def stage_visuals(ctx: dict) -> dict:
                 assets.append({"kind": "title_card", "source_provider": "title_card", "licence": "generated", "attribution_required": False,
                                "attribution_text": None} | timing)
     return {"assets": assets, "stock_hits": stock_hits, "captions": "words" if clips_on else "cards",
-            "_meta": {"provider": stock.name if stock else "title_card", "model": "pillow"}}
+            "_meta": {"provider": stock.name if stock else "title_card", "model": ClipCheck.MODEL if check else "pillow",
+                      "cost_usd": round(check.cost_usd - spent0, 6) if check else 0.0}}
 
 
 def pick_music(s: Settings, job_id: str) -> Path | None:
