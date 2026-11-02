@@ -1,4 +1,5 @@
 """FPT.AI TTS, offline: mocked API (link not ready at first), real FFmpeg for clip lengths and the join."""
+import json
 import os
 import shutil
 import subprocess
@@ -55,3 +56,22 @@ async def test_bad_key_is_permanent_and_english_is_refused(tmp_path):
         await tts.synthesize("Một câu đủ dài.", "vi", tmp_path / "x.mp3")
     with pytest.raises(ProviderRejected, match="Vietnamese only"):
         await tts.synthesize("Hello there.", "en", tmp_path / "y.mp3")
+
+
+@pytest.mark.skipif(not (FFMPEG and FFPROBE), reason="FFmpeg not found")
+@pytest.mark.anyio
+async def test_marketplace_key_uses_the_openai_style_endpoint(tmp_path):
+    clip = tmp_path / "tone.mp3"
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=24000", "-t", "1", str(clip)], check=True)
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, content=clip.read_bytes(), headers={"content-type": "audio/mpeg"})
+
+    tts = FptTTS("sk-abc", "std_quanganh", 0, FFMPEG, FFPROBE, client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    res = await tts.synthesize("Câu một nè. Câu hai nè!", "vi", tmp_path / "s0.mp3")
+    body = json.loads(seen[0].content)
+    assert str(seen[0].url) == FptTTS.MKP_URL and seen[0].headers["authorization"] == "Bearer sk-abc"
+    assert (body["model"], body["input"], body["voice"], body["speed"]) == ("FPT.TTS-pro", "Câu một nè.", "std_quanganh", 1)
+    assert len(seen) == 2 and abs(res.sentences[1]["end_ms"] - 2000) < 150

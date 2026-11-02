@@ -64,11 +64,13 @@ with c2:
             title = st.text_input("Title", sc["title"])
             caption = st.text_area("Caption", sc["caption"], height=70)
             tags = st.text_input("Hashtags (space separated)", " ".join(sc["hashtags"]))
+            sources = st.text_area("Sources (one per line)", "\n".join(sc.get("sources", [])), height=70)
             scenes = st.data_editor(sc["scenes"], num_rows="dynamic", use_container_width=True, key=f"scenes_{job_id}_{sc.get('version')}")
             editor = st.text_input("Your name", key="script_by")
             if st.form_submit_button("Save my edits") and editor:
                 body = {"edited_by": editor, "script": {"title": title, "caption": caption, "hashtags": tags.split(),
-                                                         "scenes": [x for x in scenes if x.get("narration")]}}
+                                                         "scenes": [x for x in scenes if x.get("narration")],
+                                                         "sources": [x.strip() for x in sources.splitlines() if x.strip()]}}
                 if api("PUT", f"/jobs/{job_id}/script", json=body):
                     st.success("Saved as a new script version")
                     st.rerun()
@@ -112,6 +114,8 @@ with c2:
         st.caption(f"{len(sc['scenes'])} scenes · {sc['syllable_count']} syllables · estimated {sc['estimated_duration_s']}s")
         for i, scene in enumerate(sc["scenes"]):
             st.markdown(f"**{i + 1}. {scene['on_screen_text']}**  \n{scene['narration']}")
+        if sc.get("sources"):
+            st.markdown("**Sources** (open each before approving)  \n" + "  \n".join(sc["sources"]))
     if "QUALITY" in out:
         st.subheader("Quality checks")
         checks = out["QUALITY"]["checks"]
@@ -127,7 +131,11 @@ with c2:
         for i, a in enumerate(assets):
             with cols[i % len(cols)]:
                 if r := api("GET", f"/files/{a['path']}"):
-                    st.image(r.content, caption=f"{i + 1}. {a['kind']} · {a['licence']}")
+                    if a["kind"] == "stock_video":
+                        st.video(r.content)
+                        st.caption(f"{i + 1}. {a['kind']} · {a['licence']}")
+                    else:
+                        st.image(r.content, caption=f"{i + 1}. {a['kind']} · {a['licence']}")
                 if a.get("attribution_text"):
                     st.caption(f"{a['attribution_text']} · {a.get('source_url', '')}")
         st.dataframe([{k: a.get(k) for k in ("order_index", "kind", "source_provider", "licence", "author", "source_url", "path")} for a in assets], hide_index=True, use_container_width=True)
