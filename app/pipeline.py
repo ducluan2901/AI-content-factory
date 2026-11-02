@@ -204,7 +204,9 @@ async def stage_voice(ctx: dict) -> dict:
         dur_ms = int(media.duration_s(s.ffprobe_path, res.audio_path) * 1000)
         parts.append(res.audio_path)
         timeline.append({"scene_index": i, "start_ms": t, "end_ms": t + dur_ms})
-        sentences += [{"scene_index": i, "text": x["text"], "start_ms": t + x["start_ms"], "end_ms": min(t + x["end_ms"], t + dur_ms)} for x in res.sentences]
+        sentences += [{"scene_index": i, "text": x["text"], "start_ms": t + x["start_ms"], "end_ms": min(t + x["end_ms"], t + dur_ms)}
+                      | ({"words": [w | {"start_ms": t + w["start_ms"], "end_ms": t + w["end_ms"]} for w in x["words"]]} if x.get("words") else {})
+                      for x in res.sentences]
         t += dur_ms
     raw_audio = d / "vo_raw.wav"
     await asyncio.to_thread(media.concat_audio, s.ffmpeg_path, parts, raw_audio)

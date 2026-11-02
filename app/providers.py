@@ -1,5 +1,6 @@
 """Provider ports and adapters. Business code depends on these classes, never on a vendor SDK."""
 import asyncio
+import base64
 import hashlib
 import io
 import json
@@ -259,6 +260,56 @@ class FptTTS:
         args += ["-filter_complex", "".join(f"[{i}:a]" for i in range(len(clips))) + f"concat=n={len(clips)}:v=0:a=1[a]", "-map", "[a]", str(out)]
         await asyncio.to_thread(subprocess.run, args, check=True)
         return TTSResult(out, timings)
+
+
+class ElevenLabsTTS:
+    """ElevenLabs text-to-speech: expressive multilingual voices, and a timing for every character, so the word-by-word
+    captions follow each spoken word exactly instead of an estimate. One request per scene; the voice is a voice id
+    from your ElevenLabs voice library (VoiceLab: the ID button on a voice)."""
+
+    name = "elevenlabs"
+    URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice}/with-timestamps"
+
+    def __init__(self, api_key: str, voice_id: str, model: str, client: httpx.AsyncClient | None = None):
+        self.api_key, self.voice_id, self.model = api_key, voice_id, model
+        self.voices = {"vi": voice_id, "en": voice_id}
+        self.client = client or httpx.AsyncClient(timeout=90)
+
+    @staticmethod
+    def timings(alignment: dict) -> list[dict]:
+        """Words from the character timings, grouped into sentences after . ! ? or …"""
+        words, cur = [], None
+        for ch, a, b in zip(alignment["characters"], alignment["character_start_times_seconds"], alignment["character_end_times_seconds"]):
+            if ch.isspace():
+                cur = None
+                continue
+            if cur is None:
+                cur = {"text": "", "start_ms": int(a * 1000)}
+                words.append(cur)
+            cur["text"] += ch
+            cur["end_ms"] = int(b * 1000)
+        sentences, cur = [], []
+        for w in words:
+            cur.append(w)
+            if w["text"][-1] in ".!?…":
+                sentences.append(cur)
+                cur = []
+        sentences += [cur] if cur else []
+        return [{"text": " ".join(w["text"] for w in s), "start_ms": s[0]["start_ms"], "end_ms": s[-1]["end_ms"], "words": s} for s in sentences]
+
+    async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
+        voice = voice if voice and re.fullmatch(r"[A-Za-z0-9]{20}", voice) else self.voice_id  # ignore another provider's voice name
+        r = await self.client.post(self.URL.format(voice=voice), params={"output_format": "mp3_44100_128"},
+                                   headers={"xi-api-key": self.api_key}, json={"text": text, "model_id": self.model})
+        if r.status_code in (401, 403):
+            raise ProviderRejected(f"ElevenLabs refused the request ({r.status_code}: {r.text[:200]}); check ELEVENLABS_API_KEY and your quota")
+        if r.status_code >= 400:
+            raise ProviderError(f"ElevenLabs HTTP {r.status_code}: {r.text[:200]}")
+        body = r.json()
+        if not body.get("alignment"):
+            raise ProviderError("ElevenLabs returned no timings")
+        out.write_bytes(base64.b64decode(body["audio_base64"]))
+        return TTSResult(out, self.timings(body["alignment"]))
 
 
 class FixtureTTS:
@@ -539,4 +590,8 @@ def build_tts(s: Settings):
         if not (s.fpt_ai_api_key and s.fpt_ai_api_key.get_secret_value()):
             raise ValueError("TTS_PROVIDER=fpt needs FPT_AI_API_KEY in .env")
         return FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path)
+    if s.tts_provider == "elevenlabs":
+        if not (s.elevenlabs_api_key and s.elevenlabs_api_key.get_secret_value() and s.elevenlabs_voice_id):
+            raise ValueError("TTS_PROVIDER=elevenlabs needs ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env")
+        return ElevenLabsTTS(s.elevenlabs_api_key.get_secret_value(), s.elevenlabs_voice_id, s.elevenlabs_model)
     raise ValueError(f"unknown TTS_PROVIDER {s.tts_provider}")

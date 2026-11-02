@@ -283,23 +283,29 @@ def _ass_ts(ms: float) -> str:
 
 def write_word_captions(segments: list[dict], out: Path) -> int:
     """Word-by-word captions, the look of the facts reference videos: up to WORD_CHUNK words big in the middle of the
-    screen, the word being spoken in colour. TTS gives sentence boundaries only, so each word gets a share of its
-    sentence's span by length. Returns the number of caption events."""
+    screen, the word being spoken in colour. With word timings from the TTS (ElevenLabs) each word shows from its own
+    start; otherwise each word gets a share of its sentence's span by length. Returns the number of caption events."""
+    clean = lambda s: re.sub(r"[{}\\]", "", s)  # braces and backslashes are ASS override syntax
     events, prev_end = [], 0
     for seg in segments:
-        words = re.sub(r"[{}\\]", "", seg["text"]).split()  # braces and backslashes are ASS override syntax
+        t0 = max(seg["start_ms"], prev_end)  # TTS sentence spans can overlap by a few ms
+        if seg.get("words"):
+            words, starts = [clean(w["text"]) for w in seg["words"]], [max(w["start_ms"], t0) for w in seg["words"]]
+        else:
+            words = clean(seg["text"]).split()
+            span, total, before = max(seg["end_ms"] - t0, 1), sum(len(w) + 1 for w in words), 0
+            starts = []
+            for w in words:
+                starts.append(t0 + span * before // total)
+                before += len(w) + 1
         if not words:
             continue
-        t0 = t = max(seg["start_ms"], prev_end)  # TTS sentence spans can overlap by a few ms
-        span, total, done = max(seg["end_ms"] - t, 1), sum(len(w) + 1 for w in words), 0
-        for c in range(0, len(words), WORD_CHUNK):
+        ends = starts[1:] + [max(seg["end_ms"], starts[-1])]  # a word stays until the next one starts: no blinking
+        for i, (s0, e0) in enumerate(zip(starts, ends)):
+            c = i - i % WORD_CHUNK
             chunk = words[c:c + WORD_CHUNK]
-            for k, w in enumerate(chunk):
-                done += len(w) + 1
-                end = t0 + span * done // total  # cumulative, so the last word ends exactly with the sentence
-                text = " ".join(f"{{\\c{WORD_COLOR}}}{x}{{\\c&HFFFFFF&}}" if j == k else x for j, x in enumerate(chunk))
-                events.append(f"Dialogue: 0,{_ass_ts(t)},{_ass_ts(end)},Word,,0,0,0,,{text}")
-                t = end
-        prev_end = t
+            text = " ".join(f"{{\\c{WORD_COLOR}}}{x}{{\\c&HFFFFFF&}}" if c + j == i else x for j, x in enumerate(chunk))
+            events.append(f"Dialogue: 0,{_ass_ts(s0)},{_ass_ts(e0)},Word,,0,0,0,,{text}")
+        prev_end = ends[-1]
     out.write_text(ASS_HEADER + "\n".join(events) + "\n", encoding="utf-8")
     return len(events)
