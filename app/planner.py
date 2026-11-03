@@ -11,7 +11,8 @@ from app.db import SCORE_COMPONENTS, Channel, ContentIdea, ContentJob, Trend
 # code -> (Vietnamese label, duration window in s). The script guidance per format lives in app/prompts/format_<code>.md
 FORMATS = {
     "comedy": {"label": "Hài tình huống / relatable", "window": (20, 35)},
-    "facts": {"label": "Chuyện lạ / bí ẩn / sự thật thú vị", "window": (30, 45)},
+    # 2026-11-03: the 34 s bee video lost most viewers at 0:02 on TikTok; shorter means more watch to the end
+    "facts": {"label": "Chuyện lạ / bí ẩn / sự thật thú vị", "window": (18, 28)},
     "gadget": {"label": "Sản phẩm độc lạ / gadget", "window": (25, 40)},
 }
 
