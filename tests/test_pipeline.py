@@ -61,7 +61,7 @@ def test_happy_path_requires_approval_then_exports(tmp_path):
         ok = c.post(f"/jobs/{job_id}/approve", json={"approved_by": "founder", "notes": "ok"})
         assert ok.status_code == 200, ok.text
         assert ok.json()["job"]["status"] == "EXPORTED"
-        assert {"video.mp4", "vi.srt", "caption.txt", "manifest.json", "thumbnail.jpg"} <= set(ok.json()["export"]["files"])
+        assert {"video.mp4", "upload.mp4", "vi.srt", "caption.txt", "manifest.json", "thumbnail.jpg"} <= set(ok.json()["export"]["files"])
         manifest = json.loads((tmp_path / "jobs" / job_id / "export" / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["approval"]["approved_by"] == "founder" and manifest["ai_generated"] is True
         assert c.post(f"/jobs/{job_id}/approve", json={"approved_by": "x"}).status_code == 409  # cannot approve twice

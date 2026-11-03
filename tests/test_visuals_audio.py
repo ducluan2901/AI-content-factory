@@ -610,3 +610,15 @@ async def test_clip_check_drops_the_frames_haiku_rejects_and_degrades_to_tags_on
 
     broken = PixabayProvider("k", tmp_path / "cache2", client=client, check=ClipCheck(client=FakeHaiku(RuntimeError("down"))))
     assert [c.source_id for c in await broken.search_videos("octopus sea")] == ["1", "2", "3"]  # the check failing never costs the clips
+
+
+@needs_ffmpeg
+def test_upload_copy_fits_the_browser_upload_limit(tmp_path):
+    src = tmp_path / "big.mp4"  # noise does not compress: about 1 MB for 3 s
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "nullsrc=s=540x960:r=30,geq=random(1)*255:128:128", "-f", "lavfi",
+                    "-i", "sine=frequency=300", "-t", "3", "-c:v", "libx264", "-crf", "18", "-shortest", str(src)], check=True)
+    assert src.stat().st_size > 300_000
+    size = media.upload_copy(FFMPEG, FFPROBE, src, tmp_path / "up.mp4", max_bytes=300_000)
+    assert size <= 300_000 and abs(media.duration_s(FFPROBE, tmp_path / "up.mp4") - 3) < 0.2
+    small = media.upload_copy(FFMPEG, FFPROBE, tmp_path / "up.mp4", tmp_path / "same.mp4", max_bytes=300_000)
+    assert small == size  # already small enough: copied as is

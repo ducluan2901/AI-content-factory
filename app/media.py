@@ -324,3 +324,23 @@ def write_word_captions(segments: list[dict], out: Path) -> int:
         prev_end = ends[-1]
     out.write_text(ASS_HEADER + "\n".join(events) + "\n", encoding="utf-8")
     return len(events)
+
+
+UPLOAD_MAX_BYTES = 9_500_000  # Claude in Chrome's file upload takes at most 10 MB per call
+
+
+def upload_copy(ffmpeg: str, ffprobe: str, src: Path, out: Path, max_bytes: int = UPLOAD_MAX_BYTES) -> int:
+    """A copy of the video small enough for browser upload: the file itself when it fits, otherwise re-encoded at the
+    bitrate that fits its length, lowered by 15% per try until it does. Returns the copy's size in bytes."""
+    if src.stat().st_size <= max_bytes:
+        shutil.copyfile(src, out)
+        return out.stat().st_size
+    total_kbps = max_bytes * 8 / 1000 / duration_s(ffprobe, src) * 0.92  # headroom for the container and rate control
+    for _ in range(4):
+        v = max(int(total_kbps) - 128, 300)
+        run([ffmpeg, "-y", "-v", "error", "-i", str(src), "-c:v", "libx264", "-preset", "slow", "-b:v", f"{v}k",
+             "-maxrate", f"{int(v * 1.3)}k", "-bufsize", f"{v * 2}k", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out)])
+        if out.stat().st_size <= max_bytes:
+            return out.stat().st_size
+        total_kbps *= 0.85
+    raise MediaError(f"could not fit {src.name} under {max_bytes} bytes")
