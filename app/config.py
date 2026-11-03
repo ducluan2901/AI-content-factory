@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     elevenlabs_api_key: SecretStr | None = None  # TTS_PROVIDER=elevenlabs: key from elevenlabs.io (API Keys)
     elevenlabs_voice_id: str = ""  # the ID of a voice in your ElevenLabs library
     elevenlabs_model: str = "eleven_multilingual_v2"
-    stock_provider: str = "pexels"  # pixabay | pexels | local | none | fixture; pixabay/pexels without a key degrade to "none"
+    stock_provider: str = "pexels"  # pixabay | pexels | pixabay+pexels | local | none | fixture; pixabay/pexels without a key degrade to "none"
     local_stock_dir: Path = Path("./assets/stock")  # STOCK_PROVIDER=local: your own images, matched by file name
     pexels_api_key: SecretStr | None = None
     pixabay_api_key: SecretStr | None = None  # free at pixabay.com/api/docs after sign-up

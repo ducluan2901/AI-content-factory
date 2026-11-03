@@ -15,7 +15,7 @@ from PIL import Image
 from app import media
 from app.config import Settings
 from app.main import create_app
-from app.providers import FixtureLLM, FixtureStock, FixtureTTS, PexelsProvider, PixabayProvider, build_stock
+from app.providers import FixtureLLM, FixtureStock, FixtureTTS, MultiStock, PexelsProvider, PixabayProvider, build_stock
 
 FFMPEG = os.environ.get("FFMPEG_PATH") or shutil.which("ffmpeg")
 FFPROBE = os.environ.get("FFPROBE_PATH") or shutil.which("ffprobe")
@@ -146,6 +146,10 @@ def test_build_stock_selects_and_degrades(tmp_path):
     assert isinstance(build_stock(settings(tmp_path, stock_provider="fixture")), FixtureStock)
     assert build_stock(settings(tmp_path, stock_provider="pexels")) is None  # no key configured
     assert isinstance(build_stock(settings(tmp_path, stock_provider="pexels", pexels_api_key="k")), PexelsProvider)
+    both = build_stock(settings(tmp_path, stock_provider="pixabay+pexels", pixabay_api_key="k", pexels_api_key="k"))
+    assert isinstance(both, MultiStock) and [p.name for p in both.providers] == ["pixabay", "pexels"]
+    assert build_stock(settings(tmp_path, stock_provider="pixabay+pexels", pexels_api_key="k")).name == "pexels"  # pixabay key missing: skipped
+    assert build_stock(settings(tmp_path, stock_provider="pixabay+pexels")) is None
     with pytest.raises(ValueError):
         build_stock(settings(tmp_path, stock_provider="bogus"))
 
@@ -499,6 +503,60 @@ async def test_pixabay_videos_match_tags_prefer_upright_and_skip_short_grey_or_u
     assert await prov.search_videos("octopus sea ocean") == []  # all used: the scene falls back to a photo
     fresh = PixabayProvider("k", tmp_path / "cache", client=prov.client)
     assert [c.source_id for c in await fresh.search_videos("octopus blue blood")] == ["4", "3"]  # no full match: the subject alone
+
+
+def pexels_video(i, duration=10, files=None):
+    return {"id": i, "url": f"https://www.pexels.com/video/{i}", "duration": duration, "image": f"https://cdn.test/{i}.jpg",
+            "user": {"name": "pat", "url": "https://pexels.com/@pat"},
+            "video_files": files if files is not None else [{"link": f"https://cdn.test/{i}-hd.mp4", "width": 2160, "height": 3840},
+                                                            {"link": f"https://cdn.test/{i}-sd.mp4", "width": 720, "height": 1280},
+                                                            {"link": f"https://cdn.test/{i}-land.mp4", "width": 1080, "height": 608}]}
+
+
+def pexels_handler(videos):
+    def handler(request):
+        if request.url.path == "/videos/search":
+            assert request.headers["authorization"] == "k" and request.url.params["orientation"] == "portrait"
+            return httpx.Response(200, json={"videos": videos})
+        if request.url.path.endswith(".mp4"):
+            return httpx.Response(200, content=request.url.path.encode())
+        return httpx.Response(500)
+    return handler
+
+
+@pytest.mark.anyio
+async def test_pexels_videos_pick_upright_files_skip_short_and_used_and_degrade_quietly(tmp_path):
+    videos = [pexels_video(1, duration=2), pexels_video(2), pexels_video(3, files=[{"link": "https://cdn.test/3-4k.mp4", "width": 2160, "height": 3840}]),
+              pexels_video(4)]
+    prov = PexelsProvider("k", tmp_path / "cache", client=httpx.AsyncClient(transport=httpx.MockTransport(pexels_handler(videos)), base_url="https://api.pexels.com/v1"))
+    clips = await prov.search_videos("cat sleeping sofa", n=2)
+    assert [c.source_id for c in clips] == ["2", "4"]  # 1 too short, 3 only has a 4K file
+    assert clips[0].path.name == "pexels-v2.mp4" and clips[0].path.read_bytes() == b"/2-sd.mp4"  # the upright file <= 1080 wide
+    assert clips[0].duration_s == 10.0 and clips[0].author == "pat" and prov.attribution(clips[0]) == "Photo by pat on Pexels"
+    assert await prov.search_videos("cat sleeping sofa") == []  # both used
+    broken = PexelsProvider("k", tmp_path / "cache", client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(429)), base_url="https://api.pexels.com/v1"))
+    assert await broken.search_videos("anything") == []
+
+
+@pytest.mark.anyio
+async def test_multi_stock_tops_up_pixabay_with_pexels_and_keeps_each_source(tmp_path):
+    def pixabay(request):
+        if request.url.path == "/api/videos/":
+            return httpx.Response(200, json={"hits": [{"id": 7, "pageURL": "https://pixabay.com/videos/7", "user": "bo", "tags": "cat, sofa", "duration": 8,
+                                                      "videos": {"medium": {"url": "https://cdn.test/7.mp4", "width": 1080, "height": 1920}}}]})
+        if request.url.path == "/api/":
+            return httpx.Response(200, json={"hits": []})
+        return httpx.Response(200, content=b"mp4")
+
+    pix = PixabayProvider("k", tmp_path / "cache", client=httpx.AsyncClient(transport=httpx.MockTransport(pixabay), base_url="https://pixabay.com"))
+    pex = PexelsProvider("k", tmp_path / "cache", client=httpx.AsyncClient(transport=httpx.MockTransport(pexels_handler([pexels_video(2), pexels_video(4)])),
+                                                                          base_url="https://api.pexels.com/v1"))
+    stock = MultiStock([pix, pex])
+    clips = await stock.search_videos("cat sofa")
+    assert [(c.provider, c.source_id) for c in clips] == [("pixabay", "7"), ("pexels", "2"), ("pexels", "4")]
+    assert stock.owner(clips[0]).licence == "pixabay" and stock.owner(clips[1]).licence == "pexels"
+    assert stock.owner(clips[1]).attribution(clips[1]) == "Photo by pat on Pexels" and stock.name == "pixabay+pexels"
+    assert await stock.search_photo("cat sofa") is None  # neither source has a photo: a card, not a crash
 
 
 @needs_ffmpeg

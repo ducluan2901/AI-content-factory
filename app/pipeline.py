@@ -261,6 +261,7 @@ async def stage_visuals(ctx: dict) -> dict:
     clips_on = ctx["job"].format in CLIP_FORMATS and hasattr(stock, "search_videos")
     assets, stock_hits, pool = [], 0, []
     check = getattr(stock, "check", None)
+    owner = getattr(stock, "owner", lambda a: stock)  # MultiStock: each asset carries its own source's licence
     spent0 = check.cost_usd if check else 0.0  # shortcut: two jobs in VISUALS at once would share this delta; jobs run one at a time today
     for i, sc in enumerate(scenes):
         span = vo["scenes"][i]
@@ -282,9 +283,10 @@ async def stage_visuals(ctx: dict) -> dict:
                 # a clip used again plays a later part of itself
                 start = (clip.duration_s or 0) / 2 if clip in earlier else 0.5
                 offset = min(start + k // len(clips) * step / 1000, max(0.0, (clip.duration_s or 0) - step / 1000))
-                assets.append({"kind": "stock_video", "source_provider": stock.name, "source_url": clip.source_url, "source_id": clip.source_id,
-                               "author": clip.author, "licence": stock.licence, "licence_url": stock.licence_url,
-                               "attribution_required": False, "attribution_text": stock.attribution(clip),
+                src = owner(clip)
+                assets.append({"kind": "stock_video", "source_provider": src.name, "source_url": clip.source_url, "source_id": clip.source_id,
+                               "author": clip.author, "licence": src.licence, "licence_url": src.licence_url,
+                               "attribution_required": False, "attribution_text": src.attribution(clip),
                                "scene_index": i, "order_index": len(assets), "start_ms": span["start_ms"] + round(k * step),
                                "end_ms": span["start_ms"] + round((k + 1) * step), "path": rel(s, clip.path), "clip_offset_s": round(offset, 2),
                                "width": media.W, "height": media.H})
@@ -301,9 +303,10 @@ async def stage_visuals(ctx: dict) -> dict:
                       "width": media.W, "height": media.H, "font": Path(s.font_path).name}
             if photo:
                 await asyncio.to_thread(media.render_photo_card, photo.path, text, i, s.font_path, p, words)
-                assets.append({"kind": "stock_image", "source_provider": stock.name, "source_url": photo.source_url, "source_id": photo.source_id,
-                               "author": photo.author, "licence": stock.licence, "licence_url": stock.licence_url,
-                               "attribution_required": False, "attribution_text": stock.attribution(photo)} | timing)
+                src = owner(photo)
+                assets.append({"kind": "stock_image", "source_provider": src.name, "source_url": photo.source_url, "source_id": photo.source_id,
+                               "author": photo.author, "licence": src.licence, "licence_url": src.licence_url,
+                               "attribution_required": False, "attribution_text": src.attribution(photo)} | timing)
             else:
                 await asyncio.to_thread(media.render_card, text, i, s.font_path, p, words)
                 # licence ledger (PRD D3): generated cards are ours; the font is the only third-party input
