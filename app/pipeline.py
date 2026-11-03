@@ -618,6 +618,7 @@ def export(db: Session, s: Settings, job_id: str) -> dict:
     }
     for dst, src in files.items():
         shutil.copyfile(s.storage_dir / src, d / dst)
+    media.upload_copy(s.ffmpeg_path, s.ffprobe_path, d / "video.mp4", d / "upload.mp4")  # what gets posted from the browser
     sc = out["SCRIPT"]
     (d / "caption.txt").write_text(f"{sc['title']}\n\n{sc['caption']}\n\n{' '.join(sc['hashtags'])}\n", encoding="utf-8")
     apr = db.get(Approval, job.approval_id)
