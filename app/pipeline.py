@@ -624,7 +624,7 @@ def export(db: Session, s: Settings, job_id: str) -> dict:
     manifest = {
         "job_id": job.id, "topic": job.input_topic, "language": lang, "platforms": json.loads(job.target_platforms),
         "ai_generated": True,  # for platform AI-content disclosure (BACKLOG R9)
-        "title": sc["title"], "caption": sc["caption"], "hashtags": sc["hashtags"],
+        "title": sc["title"], "caption": sc["caption"], "hashtags": sc["hashtags"], "sources": sc.get("sources", []),
         "video": {k: out["RENDER"][k] for k in ("width", "height", "duration_s", "video_codec", "audio_codec", "fps", "bytes")},
         "assets": out["VISUALS"]["assets"],
         "music": {"file": out["RENDER"]["music_track"], "licence": "owned"} if out["RENDER"].get("music_track") else None,

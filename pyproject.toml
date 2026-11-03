@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+publish = ["playwright"]  # scripts/publish.py; then: python -m playwright install chromium
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

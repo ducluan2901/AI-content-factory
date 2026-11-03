@@ -189,7 +189,7 @@ PLATFORMS = ("tiktok", "youtube_shorts", "facebook_reels")
 
 
 class Publication(Base):
-    """A manual upload of an exported video. The system never posts anything; a person records where it went."""
+    """Where an exported (human-approved) video went live: recorded by a person, or by scripts/publish.py after it posts."""
 
     __tablename__ = "publication"
     __table_args__ = (
