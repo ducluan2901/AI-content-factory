@@ -499,7 +499,7 @@ class PixabayProvider:
                 scored.append((-len(want & tags) - bonus(h), i, h))
         return [h for _, _, h in sorted(scored, key=lambda x: x[:2])]
 
-    async def search_videos(self, query: str, n: int = 3) -> list[StockPhoto]:
+    async def search_videos(self, query: str, n: int = 3, scene: str | None = None) -> list[StockPhoto]:
         """Up to n colour clips of at least 3 s not used before, upright ones first (less is cropped away for 9:16).
         Empty on no result or any failure: the caller falls back to a photo (BACKLOG R4)."""
         try:
@@ -523,7 +523,7 @@ class PixabayProvider:
                     break
             # tags lie (an octopus-shaped fairground ride is tagged "octopus"): a model looks at the frames when configured
             if self.check and (seen := [c for c in cands if c[1]]):
-                keep = await self.check.keep(query, [t for _, t in seen])
+                keep = await self.check.keep(scene or query, [t for _, t in seen])
                 if keep is not None:
                     cands = [seen[i] for i in keep]
             out = []
@@ -539,7 +539,7 @@ class PixabayProvider:
                     break
             # nothing for the full query ("octopus close up"): any fresh clip of the subject beats a blank card
             if not out and (words := [w for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in self.STOPWORDS | {"asian"}])[1:]:
-                return await self.search_videos(words[0], n)
+                return await self.search_videos(words[0], n, scene=query)  # judged against the full scene: "man" alone let a man walking pass for "man waking up bed"
             return out
         except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
             log.warning("pixabay video search failed for %r", query, exc_info=True)

@@ -542,6 +542,27 @@ def test_a_scene_whose_search_runs_dry_reuses_earlier_clips_not_a_blank_card(tmp
     assert later and all(a["clip_offset_s"] >= 1.0 for a in later)  # the reused clips play from their middle
 
 
+
+@needs_ffmpeg
+def test_a_scene_with_one_fresh_clip_mixes_in_earlier_ones_instead_of_looping_it(tmp_path):
+    class OneAfterFirst(FixtureStock):
+        calls = 0
+
+        async def search_videos(self, query, n=3):
+            OneAfterFirst.calls += 1
+            clips = await super().search_videos(query, n)
+            return clips if OneAfterFirst.calls == 1 else clips[:1]
+
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path), stock=OneAfterFirst(tmp_path / "cache", s.ffmpeg_path))
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "format": "facts", "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+    assets = d["outputs"]["VISUALS"]["assets"]
+    for i in {a["scene_index"] for a in assets}:
+        shots = [a for a in assets if a["scene_index"] == i]
+        assert len(shots) < 2 or len({a["path"] for a in shots}) >= 2  # never one clip for every shot of a scene
+
 class FakeHaiku:
     """Stands in for AsyncAnthropic: answers the clip check with a fixed keep list and records what it was shown."""
 
@@ -581,6 +602,11 @@ async def test_clip_check_drops_the_frames_haiku_rejects_and_degrades_to_tags_on
     sent = haiku.calls[0]
     assert sent["model"] == "claude-haiku-5-5" and sum(b["type"] == "image" for b in sent["messages"][0]["content"]) == 3
     assert abs(check.cost_usd - (1000 * 0.10 + 20 * 0.50) / 1e6) < 1e-12
+
+    judge = FakeHaiku([0])
+    narrow = PixabayProvider("k", tmp_path / "cache3", client=client, check=ClipCheck(client=judge))
+    await narrow.search_videos("octopus blue blood")  # no full tag match: retried as "octopus", still judged as the full scene
+    assert '"octopus blue blood"' in judge.calls[-1]["messages"][0]["content"][-1]["text"]
 
     broken = PixabayProvider("k", tmp_path / "cache2", client=client, check=ClipCheck(client=FakeHaiku(RuntimeError("down"))))
     assert [c.source_id for c in await broken.search_videos("octopus sea")] == ["1", "2", "3"]  # the check failing never costs the clips

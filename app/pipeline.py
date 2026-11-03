@@ -30,9 +30,9 @@ LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
 # viral-style scripts of very short sentences: 2.11 and 2.31 (each sentence ends in a pause). Every VOICE run records
 # the observed rate; revise this from those numbers. en unmeasured.
 SYLLABLES_PER_S = {"vi": 2.2, "en": 2.2}
-# per voice, vi: Edge is the mean of the last three measurements (2.11, 2.31, 2.59); FPT.TTS-pro 3.4 on one 66-syllable
-# facts script (the voice barely pauses between sentences). ElevenLabs unmeasured: the default above.
-VOICE_RATE_VI = {"edge_tts": 2.35, "fpt": 3.4}
+# per voice, vi: Edge is the mean of the last three measurements (2.11, 2.31, 2.59); FPT.TTS-pro is the default voice
+# fci_vietkhoa, 4.21-4.42 on four facts videos (std_quanganh read ~3.4). ElevenLabs unmeasured: the default above.
+VOICE_RATE_VI = {"edge_tts": 2.35, "fpt": 4.3}
 
 
 def speech_rate(s: Settings, language: str) -> float:
@@ -268,17 +268,19 @@ async def stage_visuals(ctx: dict) -> dict:
         clips = await stock.search_videos(query) if clips_on else []
         photo = None if clips else await stock.search_photo(query) if stock else None
         stock_hits += bool(clips or photo)
-        reused = clips_on and not clips and not photo and bool(pool)
-        if reused:  # the search ran dry (every octopus clip already used): an earlier clip, later in, beats a blank card
-            clips = pool[i % len(pool):] + pool[:i % len(pool)]  # every clip so far, so the late scenes do not all loop one scene's
-        pool += [] if reused else clips
+        earlier = list(pool)
+        if clips_on and not clips and not photo and earlier:  # the search ran dry (every octopus clip already used): an earlier clip, later in, beats a blank card
+            clips = earlier[i % len(earlier):] + earlier[:i % len(earlier)]  # every clip so far, so the late scenes do not all loop one scene's
+        elif len(clips) == 1 and earlier:  # one fresh clip would loop the whole scene (a cat walking 4 times): mix in earlier ones
+            clips = clips + earlier[-2:]
+        pool += [c for c in clips if c not in earlier]
         if clips:
             n = max(1, math.ceil((span["end_ms"] - span["start_ms"]) / SHOT_MS))
             step = (span["end_ms"] - span["start_ms"]) / n
             for k in range(n):
                 clip = clips[k % len(clips)]
                 # a clip used again plays a later part of itself
-                start = (clip.duration_s or 0) / 2 if reused else 0.5
+                start = (clip.duration_s or 0) / 2 if clip in earlier else 0.5
                 offset = min(start + k // len(clips) * step / 1000, max(0.0, (clip.duration_s or 0) - step / 1000))
                 assets.append({"kind": "stock_video", "source_provider": stock.name, "source_url": clip.source_url, "source_id": clip.source_id,
                                "author": clip.author, "licence": stock.licence, "licence_url": stock.licence_url,
