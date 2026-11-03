@@ -361,6 +361,7 @@ class StockPhoto:
     author: str
     author_url: str | None = None
     duration_s: float | None = None  # stock video clips only
+    provider: str | None = None  # set by MultiStock: which source this came from
 
 
 class PexelsProvider:
@@ -375,10 +376,58 @@ class PexelsProvider:
     def attribution(photo: "StockPhoto") -> str:
         return f"Photo by {photo.author} on Pexels"
 
-    def __init__(self, api_key: str, cache_dir: Path, client: httpx.AsyncClient | None = None):
-        self.api_key, self.cache_dir = api_key, cache_dir
+    CHECK_MAX = 8  # clip candidates looked at per search
+
+    def __init__(self, api_key: str, cache_dir: Path, client: httpx.AsyncClient | None = None, check: "ClipCheck | None" = None):
+        self.api_key, self.cache_dir, self.check = api_key, cache_dir, check
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.client = client or httpx.AsyncClient(base_url="https://api.pexels.com/v1", timeout=15)
+        self.used: set[str] = set()  # shortcut: per process, like PixabayProvider.used
+
+    @staticmethod
+    def _file(video: dict) -> dict | None:
+        """The largest upright file of at most 1080 px wide (less to crop for 9:16, less to download)."""
+        files = [f for f in video.get("video_files") or [] if f.get("link") and (f.get("width") or 0) <= 1080]
+        up = [f for f in files if (f.get("height") or 0) > (f.get("width") or 0)]
+        return max(up or files, key=lambda f: f.get("width") or 0, default=None)
+
+    async def search_videos(self, query: str, n: int = 3, scene: str | None = None) -> list[StockPhoto]:
+        """Up to n portrait clips of at least 3 s not used before, in Pexels' own order (it has no tags to rank on).
+        Empty on no result or any failure: the caller falls back to a photo (BACKLOG R4)."""
+        try:
+            resp = await self.client.get("https://api.pexels.com/videos/search", headers={"Authorization": self.api_key},
+                                         params={"query": query[:100], "orientation": "portrait", "per_page": 20})
+            resp.raise_for_status()
+            cands = []  # (video, file, preview bytes)
+            for v in resp.json().get("videos") or []:
+                if v.get("duration", 0) < 3 or str(v["id"]) in self.used or not (f := self._file(v)):
+                    continue
+                thumb = None
+                if self.check and v.get("image"):
+                    r = await self.client.get(v["image"], follow_redirects=True)
+                    r.raise_for_status()
+                    thumb = r.content
+                cands.append((v, f, thumb))
+                if len(cands) == self.CHECK_MAX:
+                    break
+            if self.check and (seen := [c for c in cands if c[2]]):
+                keep = await self.check.keep(scene or query, [t for _, _, t in seen])
+                if keep is not None:
+                    cands = [seen[i] for i in keep]
+            out = []
+            for v, f, _ in cands[:n]:
+                cached = self.cache_dir / f"pexels-v{v['id']}.mp4"
+                if not cached.is_file():
+                    clip = await self.client.get(f["link"], follow_redirects=True)
+                    clip.raise_for_status()
+                    cached.write_bytes(clip.content)
+                self.used.add(str(v["id"]))
+                user = v.get("user") or {}
+                out.append(StockPhoto(cached, str(v["id"]), v["url"], user.get("name") or "Pexels contributor", user.get("url"), float(v["duration"])))
+            return out
+        except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
+            log.warning("pexels video search failed for %r", query, exc_info=True)
+            return []
 
     async def search_photo(self, query: str) -> StockPhoto | None:
         try:
@@ -643,6 +692,38 @@ class LocalStock:
         return StockPhoto(best, best.name, None, "owner")  # the file name is enough; the folder path is private
 
 
+class MultiStock:
+    """Several stock sources in order of preference (STOCK_PROVIDER=pixabay+pexels): one source alone ran dry after
+    2-7 distinct clips a video, so scenes looped. Each asset keeps its own source's name and licence: owner(asset)."""
+
+    def __init__(self, providers: list):
+        self.providers = providers
+        self.name = "+".join(p.name for p in providers)
+        self.check = next((p.check for p in providers if getattr(p, "check", None)), None)
+
+    def owner(self, asset: StockPhoto):
+        return next(p for p in self.providers if p.name == asset.provider)
+
+    @staticmethod
+    def _tag(p, assets):
+        for a in assets:
+            a.provider = p.name
+        return assets
+
+    async def search_videos(self, query: str, n: int = 3, scene: str | None = None) -> list[StockPhoto]:
+        out = []
+        for p in self.providers:
+            if len(out) < n and hasattr(p, "search_videos"):
+                out += self._tag(p, await p.search_videos(query, n - len(out), scene=scene))
+        return out
+
+    async def search_photo(self, query: str) -> StockPhoto | None:
+        for p in self.providers:
+            if photo := await p.search_photo(query):
+                return self._tag(p, [photo])[0]
+        return None
+
+
 def build_stock(s: Settings):
     if s.stock_provider == "none":
         return None
@@ -650,18 +731,25 @@ def build_stock(s: Settings):
         return LocalStock(s.local_stock_dir)
     if s.stock_provider == "fixture":
         return FixtureStock(s.storage_dir / "stock_cache", s.ffmpeg_path)
-    if s.stock_provider == "pixabay":
+    if "+" in s.stock_provider:
+        providers = [p for name in s.stock_provider.split("+") if (p := _build_one(s, name))]
+        return MultiStock(providers) if providers else None
+    return _build_one(s, s.stock_provider)
+
+
+def _build_one(s: Settings, name: str):
+    key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
+    check = ClipCheck(key) if s.clip_check and key else None
+    if name == "pixabay":
         if not (s.pixabay_api_key and s.pixabay_api_key.get_secret_value()):
             log.warning("STOCK_PROVIDER=pixabay but PIXABAY_API_KEY is empty; every scene will fall back to a title card")
             return None
-        key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
-        check = ClipCheck(key) if s.clip_check and key else None
         return PixabayProvider(s.pixabay_api_key.get_secret_value(), s.storage_dir / "stock_cache", check=check)
-    if s.stock_provider == "pexels":
+    if name == "pexels":
         if not (s.pexels_api_key and s.pexels_api_key.get_secret_value()):
             log.warning("STOCK_PROVIDER=pexels but PEXELS_API_KEY is empty; every scene will fall back to a title card")
             return None
-        return PexelsProvider(s.pexels_api_key.get_secret_value(), s.storage_dir / "stock_cache")
+        return PexelsProvider(s.pexels_api_key.get_secret_value(), s.storage_dir / "stock_cache", check=check)
     raise ValueError(f"unknown STOCK_PROVIDER {s.stock_provider}")
 
 
