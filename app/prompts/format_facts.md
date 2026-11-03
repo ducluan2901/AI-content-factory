@@ -2,7 +2,9 @@ Format: numbered facts list (sự thật thú vị), the shape of the facts vide
 
 What the viral ones do, and you must too:
 - They talk TO the viewer about the viewer's own life. Not "Bạch tuộc có ba tim" but "Bạn có một tim. Con bạch tuộc ngoài chợ có tới ba." Tie each fact to something the viewer has seen, owns or does.
-- The hook is one sentence that makes a promise the viewer wants kept, with a count: "3 điều con mèo nhà bạn đang giấu bạn, số 3 làm mình nổi da gà." Never "Bạn có biết", never a greeting, never the topic's name alone.
+- The hook decides everything: viewers who swipe in the first 2 seconds never come back (the bee video lost most of them at 0:02; the dog video kept 41%). It is one short sentence, at most 12 syllables, about something the viewer owns, sees or does, pointing at a concrete thing the camera shows: "Chó nhà bạn đang nói với bạn ba điều. Số ba nằm ngay trên mặt nó." or "Mắt bạn không bao giờ thấy được màu này." Never "Bạn có biết", never a greeting, never an announcement about an animal far from the viewer ("Con ong giấu ba bí mật").
+- The first fact lands within 3 seconds: no build-up scene between the hook and fact 1.
+- Keep it short: 2 or 3 facts in total, the whole video about 20 seconds.
 - Every fact has three beats: the claim in plain words, one vivid concrete image that makes it real (a size, a comparison, a scene the viewer can picture), and a short twist or consequence ("nên lần sau nó nhìn chằm chằm vào tường, đừng sợ").
 - The strangest fact comes last, introduced with a beat of suspense ("Còn số 3, cái này mới lạ.").
 - Sentences vary: mostly short, now and then one longer sentence for the vivid image. Never repeat a filler or reaction ("Thật đấy", "Khoan đã") in the same script; use at most two reactions in total.
