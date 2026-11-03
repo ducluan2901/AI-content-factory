@@ -1,0 +1,77 @@
+{
+  "name": "NDL - Dang YouTube Short (nhap)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ndl-post-youtube",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.video_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "name": "Tai video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "resource": "video",
+        "operation": "upload",
+        "title": "={{ $('Webhook').item.json.body.title }}",
+        "regionCode": "VN",
+        "categoryId": "15",
+        "binaryProperty": "data",
+        "options": {
+          "description": "={{ $('Webhook').item.json.body.description }}",
+          "privacyStatus": "={{ $('Webhook').item.json.body.publish_at ? 'private' : 'public' }}",
+          "publishAt": "={{ $('Webhook').item.json.body.publish_at || '' }}",
+          "selfDeclaredMadeForKids": false,
+          "notifySubscribers": true
+        }
+      },
+      "name": "YouTube upload",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [440, 0],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "DIEN_SAU_KHI_TAO_CREDENTIAL",
+          "name": "YouTube NDL tech"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"video_id\": $json.id, \"url\": \"https://youtube.com/shorts/\" + $json.id } }}"
+      },
+      "name": "Tra ket qua",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [660, 0]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Tai video", "type": "main", "index": 0 }]] },
+    "Tai video": { "main": [[{ "node": "YouTube upload", "type": "main", "index": 0 }]] },
+    "YouTube upload": { "main": [[{ "node": "Tra ket qua", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}
