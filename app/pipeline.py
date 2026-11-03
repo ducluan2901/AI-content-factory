@@ -30,9 +30,9 @@ LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
 # viral-style scripts of very short sentences: 2.11 and 2.31 (each sentence ends in a pause). Every VOICE run records
 # the observed rate; revise this from those numbers. en unmeasured.
 SYLLABLES_PER_S = {"vi": 2.2, "en": 2.2}
-# per voice, vi: Edge is the mean of the last three measurements (2.11, 2.31, 2.59); FPT.TTS-pro 3.4 on one 66-syllable
-# facts script (the voice barely pauses between sentences). ElevenLabs unmeasured: the default above.
-VOICE_RATE_VI = {"edge_tts": 2.35, "fpt": 3.4}
+# per voice, vi: Edge is the mean of the last three measurements (2.11, 2.31, 2.59); FPT.TTS-pro is the default voice
+# fci_vietkhoa, 4.21-4.42 on four facts videos (std_quanganh read ~3.4). ElevenLabs unmeasured: the default above.
+VOICE_RATE_VI = {"edge_tts": 2.35, "fpt": 4.3}
 
 
 def speech_rate(s: Settings, language: str) -> float:
