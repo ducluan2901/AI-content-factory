@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "NDL - Dang YouTube Short",
   "nodes": [
     {
@@ -37,7 +37,7 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { \"video_id\": $json.id, \"url\": \"https://youtube.com/shorts/\" + $json.id } }}"
+        "responseBody": "={{ { \"video_id\": $json.uploadId, \"url\": \"https://youtube.com/shorts/\" + $json.uploadId } }}"
       },
       "name": "Tra ket qua",
       "type": "n8n-nodes-base.respondToWebhook",
@@ -51,3 +51,4 @@
   },
   "settings": { "executionOrder": "v1" }
 }
+

@@ -59,7 +59,10 @@ def main() -> int:
                 with video.open("rb") as f:
                     r = httpx.post(s.n8n_webhook_url, data=data, files={"video": (video.name, f, "video/mp4")}, timeout=600)
                 r.raise_for_status()
-                url = r.json().get("url")
+                video_id = r.json().get("video_id")
+                if not video_id:  # n8n answered 200 but YouTube returned no video: record nothing, send again later
+                    raise ValueError(f"n8n returned no video id: {r.text[:200]}")
+                url = f"https://youtube.com/shorts/{video_id}"
             except Exception as e:  # noqa: BLE001 - one failure must not stop the others; nothing is recorded for it
                 failed += 1
                 print(f"FAILED {job.id}: {e}")
