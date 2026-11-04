@@ -39,3 +39,27 @@ def test_only_exported_jobs_are_posted_and_each_platform_once(tmp_path):
         assert todo == {("j_ok", "youtube_shorts"), ("j_ok", "facebook_reels"),
                         ("j_two", "tiktok"), ("j_two", "youtube_shorts"), ("j_two", "facebook_reels")}  # never the unapproved one
         assert {(j.id, p) for j, p in publish.pending(db, ["tiktok"], ["j_ok", "j_two"])} == {("j_two", "tiktok")}
+
+
+def test_n8n_publish_time_is_today_or_tomorrow_in_utc():
+    from datetime import datetime, timedelta, timezone
+
+    spec = importlib.util.spec_from_file_location("publish_n8n", Path(__file__).parent.parent / "scripts" / "publish_n8n.py")
+    n8n = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(n8n)
+    assert n8n.publish_at(None) is None
+    at = datetime.strptime(n8n.publish_at("19:30"), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    vn = at.astimezone(n8n.VN)
+    assert (vn.hour, vn.minute) == (19, 30) and timedelta(0) < at - datetime.now(timezone.utc) <= timedelta(days=1)
+
+
+def test_publish_at_days_ahead_lands_on_that_day():
+    from datetime import datetime
+
+    spec = importlib.util.spec_from_file_location("publish_n8n", Path(__file__).parent.parent / "scripts" / "publish_n8n.py")
+    n8n = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(n8n)
+    today = n8n.publish_at("19:30")
+    later = n8n.publish_at("19:30", days_ahead=2)
+    gap = datetime.strptime(later, "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(today, "%Y-%m-%dT%H:%M:%SZ")
+    assert gap.days == 2

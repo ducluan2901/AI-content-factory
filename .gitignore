@@ -31,3 +31,6 @@ htmlcov/
 .idea/
 Thumbs.db
 desktop.ini
+
+# MCP server config with tokens (n8n etc.)
+.mcp.json

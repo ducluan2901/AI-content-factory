@@ -27,11 +27,12 @@ class Settings(BaseSettings):
     elevenlabs_api_key: SecretStr | None = None  # TTS_PROVIDER=elevenlabs: key from elevenlabs.io (API Keys)
     elevenlabs_voice_id: str = ""  # the ID of a voice in your ElevenLabs library
     elevenlabs_model: str = "eleven_multilingual_v2"
-    stock_provider: str = "pexels"  # pixabay | pexels | local | none | fixture; pixabay/pexels without a key degrade to "none"
+    stock_provider: str = "pexels"  # pixabay | pexels | pixabay+pexels | local | none | fixture; pixabay/pexels without a key degrade to "none"
     local_stock_dir: Path = Path("./assets/stock")  # STOCK_PROVIDER=local: your own images, matched by file name
     pexels_api_key: SecretStr | None = None
     pixabay_api_key: SecretStr | None = None  # free at pixabay.com/api/docs after sign-up
     youtube_channel_id: str = ""  # scripts/publish.py refuses to post to any other YouTube channel when set
+    n8n_webhook_url: str = ""  # scripts/publish_n8n.py: production URL of the "NDL - Dang YouTube Short" webhook
     clip_check: bool = True  # Claude Haiku looks at stock clip frames and drops off-topic ones (~$0.0002 a search)
     music_dir: Path = Path("./assets/music")  # background tracks (mp3/wav/m4a/ogg) you have the right to use; empty = no music
     ffmpeg_path: str = "ffmpeg"
