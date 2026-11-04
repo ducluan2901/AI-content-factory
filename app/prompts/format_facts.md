@@ -24,6 +24,7 @@ Hook patterns to rotate (common in high-retention shorts; pick the one that fits
 Retention (one open loop, paid at the end):
 - The hook plants a loop ("Số ba nằm ngay trên mặt nó") and the last fact pays it. Do not pay it early, and say "cuối video" or "số ba" once so viewers stay.
 - Between facts, one 4-word bridge that promises the next one ("Số hai còn lạ hơn."). No recap, no thanks, no goodbye.
+- When the topic text says "Mai: <next subject>", the narration ends with the question and then one 3-word teaser "Mai: <next subject>." (viewers follow a channel only when they know what tomorrow brings). Count it in the length. Without that note, no teaser, no "follow".
 - The final line is the comment bait and doubles as the loop back to the first second, so a rewatch feels natural. It asks for a number, a yes/no or a name (e.g. "Chó nhà bạn làm được cái nào trong ba cái này?"), never a generic "bạn nghĩ sao".
 
 Caption and hashtags (what the viral Vietnamese facts videos use, 200K to 17M views):
