@@ -6,6 +6,7 @@ nothing on this computer is exposed to the internet.
 
     python scripts/publish_n8n.py --at 19:30                  # every pending video, scheduled for 19:30 today (Vietnam time)
     python scripts/publish_n8n.py --job job_01... --at 19:30   # one job
+    python scripts/publish_n8n.py --job job_01... --at 19:30 --days-ahead 2   # the day after tomorrow at 19:30
     python scripts/publish_n8n.py --job job_01...              # publish at once
 
 N8N_WEBHOOK_URL in .env: the workflow's production webhook URL.
@@ -26,12 +27,12 @@ from scripts.publish import pending, youtube_description, youtube_title  # noqa:
 VN = timezone(timedelta(hours=7))
 
 
-def publish_at(hhmm: str | None) -> str | None:
-    """Today at hh:mm Vietnam time as RFC 3339 UTC; tomorrow if that moment has passed."""
+def publish_at(hhmm: str | None, days_ahead: int = 0) -> str | None:
+    """hh:mm Vietnam time, days_ahead days from today, as RFC 3339 UTC; one day later if that moment has passed."""
     if not hhmm:
         return None
     h, m = map(int, hhmm.split(":"))
-    at = datetime.combine(datetime.now(VN).date(), time(h, m), VN)
+    at = datetime.combine(datetime.now(VN).date() + timedelta(days=days_ahead), time(h, m), VN)
     if at <= datetime.now(VN):
         at += timedelta(days=1)
     return at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -41,11 +42,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--job", action="append", help="only this job (repeatable)")
     ap.add_argument("--at", help="hh:mm Vietnam time to publish; omitted = public at once")
+    ap.add_argument("--days-ahead", type=int, default=0, help="with --at: publish this many days from today (1 = tomorrow)")
     args = ap.parse_args()
     s = Settings()
     if not s.n8n_webhook_url:
         ap.error("N8N_WEBHOOK_URL is not set in .env")
-    when = publish_at(args.at)
+    when = publish_at(args.at, args.days_ahead)
     failed = 0
     with make_sessionmaker(s.database_url, create=False)() as db:
         for job, _ in pending(db, ["youtube_shorts"], args.job):
