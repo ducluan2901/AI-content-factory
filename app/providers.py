@@ -341,6 +341,20 @@ class FixtureTTS:
         return TTSResult(out, [{"text": text, "start_ms": 0, "end_ms": int(dur * 1000)}])
 
 
+class LangRouterTTS:
+    """One provider per language: FPT voices Vietnamese only, so an English job (the global channel) goes to Edge."""
+
+    def __init__(self, by_lang: dict):
+        self.by_lang = by_lang
+        self.name = "+".join(p.name for p in by_lang.values())
+        self.voices = {lang: p.voices[lang] for lang, p in by_lang.items()}
+
+    async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
+        if language not in self.by_lang:
+            raise ProviderRejected(f"no TTS provider for language {language}")
+        return await self.by_lang[language].synthesize(text, language, out, voice)
+
+
 def build_llm(s: Settings):
     if s.llm_provider == "anthropic_api":
         if not s.anthropic_api_key:
@@ -408,9 +422,10 @@ class ClipCheck:
 
     MODEL = "claude-haiku-5-5"
 
-    def __init__(self, api_key: str | None = None, client=None):
+    def __init__(self, api_key: str | None = None, client=None, model: str = MODEL):
         import anthropic
 
+        self.model = model
         self.client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=2)
         self.cost_usd = 0.0  # running total, read by the visuals stage
 
@@ -436,9 +451,9 @@ class ClipCheck:
             "unless the description asks for it, and not a different animal or object. Order the kept frames best first. "
             'Answer with JSON only: {"keep": [frame numbers]}')})
         try:
-            resp = await self.client.beta.messages.create(model=self.MODEL, max_tokens=300, thinking={"type": "disabled"},
+            resp = await self.client.beta.messages.create(model=self.model, max_tokens=300, thinking={"type": "disabled"},
                                                           output_config={"effort": "low"}, messages=[{"role": "user", "content": content}])
-            p_in, p_out = PRICES.get(resp.model, PRICES[self.MODEL])
+            p_in, p_out = PRICES.get(resp.model, PRICES[self.model])
             self.cost_usd += (resp.usage.input_tokens * p_in + resp.usage.output_tokens * p_out) / 1e6
             keep = extract_json("".join(b.text for b in resp.content if b.type == "text")).get("keep", [])
             return list(dict.fromkeys(i for i in keep if isinstance(i, int) and 0 <= i < len(frames)))
@@ -655,7 +670,7 @@ def build_stock(s: Settings):
             log.warning("STOCK_PROVIDER=pixabay but PIXABAY_API_KEY is empty; every scene will fall back to a title card")
             return None
         key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
-        check = ClipCheck(key) if s.clip_check and key else None
+        check = ClipCheck(key, model=s.clip_check_model) if s.clip_check and key else None
         return PixabayProvider(s.pixabay_api_key.get_secret_value(), s.storage_dir / "stock_cache", check=check)
     if s.stock_provider == "pexels":
         if not (s.pexels_api_key and s.pexels_api_key.get_secret_value()):
@@ -673,7 +688,8 @@ def build_tts(s: Settings):
     if s.tts_provider == "fpt":
         if not (s.fpt_ai_api_key and s.fpt_ai_api_key.get_secret_value()):
             raise ValueError("TTS_PROVIDER=fpt needs FPT_AI_API_KEY in .env")
-        return FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path)
+        return LangRouterTTS({"vi": FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path),
+                              "en": EdgeTTS({"en": s.tts_voice_en}, s.tts_rate)})
     if s.tts_provider == "elevenlabs":
         if not (s.elevenlabs_api_key and s.elevenlabs_api_key.get_secret_value() and s.elevenlabs_voice_id):
             raise ValueError("TTS_PROVIDER=elevenlabs needs ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env")
