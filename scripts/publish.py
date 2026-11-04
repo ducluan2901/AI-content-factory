@@ -41,8 +41,12 @@ def tiktok_caption(m: dict) -> str:
     return f"{m['caption']} " + " ".join(m["hashtags"])
 
 
+SERIES = "Thú cưng nhà bạn"
+
+
 def youtube_title(m: dict) -> str:
-    return f"{m['title'][:91].rstrip()} #Shorts"  # YouTube titles stop at 100 characters
+    tail = f" | {SERIES} #Shorts" if "series" in (m.get("topic") or "").lower() else " #Shorts"  # same name on every series video
+    return f"{m['title'][:100 - len(tail)].rstrip()}{tail}"  # YouTube titles stop at 100 characters
 
 
 def _tags(m: dict, instead: str) -> str:

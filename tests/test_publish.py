@@ -39,3 +39,9 @@ def test_only_exported_jobs_are_posted_and_each_platform_once(tmp_path):
         assert todo == {("j_ok", "youtube_shorts"), ("j_ok", "facebook_reels"),
                         ("j_two", "tiktok"), ("j_two", "youtube_shorts"), ("j_two", "facebook_reels")}  # never the unapproved one
         assert {(j.id, p) for j, p in publish.pending(db, ["tiktok"], ["j_ok", "j_two"])} == {("j_two", "tiktok")}
+
+
+def test_youtube_title_names_the_series_only_for_series_topics():
+    series = publish.youtube_title({"title": "x" * 120, "topic": "Tai chó. Series Thú cưng nhà bạn đang giấu gì. Mai: lưỡi mèo"})
+    assert series.endswith(" | Thú cưng nhà bạn #Shorts") and len(series) <= 100
+    assert publish.youtube_title({"title": "Mắt bạn", "topic": "mắt"}) == "Mắt bạn #Shorts"
