@@ -20,6 +20,8 @@ Hook patterns to rotate (common in high-retention shorts; pick the one that fits
 - Something they have never seen: "Bạn chưa từng thấy lỗ hổng này, dù nó ở trong mắt bạn."
 - A small test they can do in 3 seconds: "Nhắm một mắt, nhìn dấu chấm này." (only when the scene can show it)
 - A common belief turned over, only when a reference work backs the correction.
+- Dog-versus-cat contrast (the top Vietnamese pet facts videos, 20K to 4.9M views, almost all use it): "Chó nhà bạn uống nước kiểu múc. Mèo thì không." One sentence per animal, the difference is the hook.
+- A test the viewer runs on their own pet right now ("Bật tiếng này lên, chó nhà bạn sẽ chạy tới" got 380K likes): only when the fact really is testable at home, and the last line asks for the result.
 
 Retention (one open loop, paid at the end):
 - The hook plants a loop ("Số ba nằm ngay trên mặt nó") and the last fact pays it. Do not pay it early, and say "cuối video" or "số ba" once so viewers stay.
