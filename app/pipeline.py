@@ -73,6 +73,15 @@ def spoken_units(text: str, language: str) -> int:
     return len(text.replace(" ", "")) if language == "ja" else len(text.split())
 
 
+JA_CAPTION_CHARS = 6  # Yu Gothic at the word-caption size (140) fits about 6 characters between the safe margins
+
+
+def ja_caption_spacing(text: str) -> str:
+    """Japanese has no spaces to break captions at: split after punctuation, then cut any piece still over a line."""
+    pieces = re.sub(r"([、。？！?!])", r"\1 ", text).split()
+    return " ".join(p[k:k + JA_CAPTION_CHARS] for p in pieces for k in range(0, len(p), JA_CAPTION_CHARS))
+
+
 def font_for(s: Settings, language: str) -> str:
     return s.font_path_ja if language == "ja" else s.font_path
 
@@ -520,7 +529,10 @@ async def stage_subtitles(ctx: dict) -> dict:
     srt, vtt = d / f"{job.language}.srt", d / f"{job.language}.vtt"
     media.write_subtitles(cues, srt, vtt)
     ass = d / f"{job.language}.ass"
-    media.write_word_captions(ctx["up"]["VOICE"]["segments"], ass)
+    segs = ctx["up"]["VOICE"]["segments"]
+    if job.language == "ja":  # captions break only at spaces, and a line holds ~6 kana/kanji at the caption size
+        segs = [x | {"text": ja_caption_spacing(x["text"])} for x in segs]
+    media.write_word_captions(segs, ass)
     return {"srt_path": rel(s, srt), "vtt_path": rel(s, vtt), "ass_path": rel(s, ass), "cue_count": len(cues),
             "max_chars_per_line": max((len(l) for c in cues for l in c["lines"]), default=0),
             "max_cue_duration_s": round(max((c["end_ms"] - c["start_ms"] for c in cues), default=0) / 1000, 2),

@@ -191,3 +191,12 @@ async def test_long_translated_voice_is_sped_up_and_timings_follow(tmp_path):
     assert out["segments"][-1]["end_ms"] <= out["duration_s"] * 1000 + 1
     job.source_job_id = None  # an original script is never sped up: its length is the writer's to fix
     assert (await stage_voice(ctx))["tempo"] == 1.0
+
+
+def test_japanese_captions_break_into_line_sized_pieces():
+    from app.pipeline import JA_CAPTION_CHARS, ja_caption_spacing
+
+    # a real translated line that overflowed the screen as one caption word (2026-11-05)
+    out = ja_caption_spacing("心臓は人間が一つ、タコは三つ。 二つ目は?")
+    assert out.split() == ["心臓は人間が", "一つ、", "タコは三つ。", "二つ目は?"]
+    assert all(len(p) <= JA_CAPTION_CHARS for p in out.split())
