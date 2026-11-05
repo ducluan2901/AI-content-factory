@@ -37,8 +37,16 @@ class Stop(Exception):
 # ---------------------------------------------------------------- texts per platform
 
 
+# TikTok search matches the first caption line; people type the subject with diacritics, so the topic tag is spelled out
+_PET = "Sự thật thú vị về {0} – {0} nhà bạn"
+SEARCH_LINES = {"#cho": _PET.format("chó"), "#meo": _PET.format("mèo"), "#chovameo": _PET.format("chó mèo"),
+                "#cavang": _PET.format("cá vàng"), "#doimat": "Sự thật thú vị về đôi mắt của bạn", "#bachtuoc": "Sự thật thú vị về bạch tuộc"}
+
+
 def tiktok_caption(m: dict) -> str:
-    return f"{m['caption']} " + " ".join(m["hashtags"])
+    # shortcut: tags outside SEARCH_LINES get no search line; add new subjects there
+    search = next((SEARCH_LINES[t.lower()] + "\n" for t in m["hashtags"] if t.lower() in SEARCH_LINES), "")
+    return f"{search}{m['caption']} " + " ".join(m["hashtags"])
 
 
 SERIES = "Thú cưng nhà bạn"

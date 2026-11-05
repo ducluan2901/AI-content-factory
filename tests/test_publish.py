@@ -14,7 +14,7 @@ M = {"title": "3 điều con chó nhà bạn đang nói với bạn, số 3 nằ
 
 
 def test_each_platform_gets_its_own_tags_and_the_sources():
-    assert publish.tiktok_caption(M) == "Chó nhà bạn hay xin gì? #suthatthuvi #khamphathegioi #learnontiktok #cho #viral"
+    assert publish.tiktok_caption(M) == "Sự thật thú vị về chó – chó nhà bạn\nChó nhà bạn hay xin gì? #suthatthuvi #khamphathegioi #learnontiktok #cho #viral"
     assert publish.youtube_description(M) == ("Chó nhà bạn hay xin gì?\n\nNguồn:\nSố 1: American Kennel Club\nSố 2: National Geographic"
                                              "\n\n#suthatthuvi #khamphathegioi #shorts #cho #viral")
     assert publish.facebook_description(M).endswith("#suthatthuvi #khamphathegioi #reels #cho #viral")
@@ -45,3 +45,7 @@ def test_youtube_title_names_the_series_only_for_series_topics():
     series = publish.youtube_title({"title": "x" * 120, "topic": "Tai chó. Series Thú cưng nhà bạn đang giấu gì. Mai: lưỡi mèo"})
     assert series.endswith(" | Thú cưng nhà bạn #Shorts") and len(series) <= 100
     assert publish.youtube_title({"title": "Mắt bạn", "topic": "mắt"}) == "Mắt bạn #Shorts"
+
+
+def test_tiktok_caption_has_no_search_line_for_unknown_subjects():
+    assert publish.tiktok_caption({"caption": "Cá voi hát.", "hashtags": ["#cavoi", "#viral"]}) == "Cá voi hát. #cavoi #viral"
