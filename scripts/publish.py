@@ -2,9 +2,11 @@
 
 Only EXPORTED jobs (a person approved them in the console) are posted, each platform once: a Publication row is
 recorded after every post and a job/platform pair that has one is skipped. The browser keeps its own sign-ins in
-storage/browser_profile; sign in once with --login, by hand. The script never sees a password.
+storage/browser_profile; sign in once with --login, by hand. The script never sees a password. A second set of
+accounts (the English channel) gets its own profile folder with --profile: sign in there once, and pass it on every run.
 
     python scripts/publish.py --login                  # once: sign in to the three sites, then press Enter
+    python scripts/publish.py --login --profile browser_profile_en   # the English channel's accounts, once
     python scripts/publish.py --dry-run                # fill everything, stop before each Post button
     python scripts/publish.py                          # post every approved video not yet posted
     python scripts/publish.py --platforms youtube_shorts --job job_01...
@@ -22,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select  # noqa: E402
 
 from app.config import Settings  # noqa: E402
-from app.db import ContentJob, Publication, make_sessionmaker, now  # noqa: E402
+from app.db import Channel, ContentJob, Publication, make_sessionmaker, now  # noqa: E402
 
 PLATFORMS = ("tiktok", "youtube_shorts", "facebook_reels")
 URLS = {"tiktok": "https://www.tiktok.com/tiktokstudio/upload", "youtube_shorts": "https://studio.youtube.com",
@@ -128,7 +130,7 @@ def post_tiktok(page, video: Path, m: dict, dry: bool) -> str | None:
 
 
 def post_youtube(page, video: Path, m: dict, dry: bool, channel: str) -> str | None:
-    page.goto(URLS["youtube_shorts"])
+    page.goto(f"https://studio.youtube.com/channel/{channel}" if channel else URLS["youtube_shorts"])  # a brand channel of the same Google account opens by id
     page.wait_for_url(re.compile(r"/channel/UC[\w-]+"), timeout=60_000)
     found = re.search(r"/channel/(UC[\w-]+)", page.url).group(1)
     if channel and found != channel:  # the personal channel was signed in once instead of the brand channel
@@ -191,13 +193,13 @@ def post_facebook(page, video: Path, m: dict, dry: bool) -> str | None:
 # ---------------------------------------------------------------- run
 
 
-def browser(s: Settings, pw):
+def browser(s: Settings, pw, profile: str):
     """The installed Chrome when there is one: Google refuses sign-in in the bare test browser ("browser not secure")."""
     opts = {"headless": False, "viewport": {"width": 1280, "height": 900}, "ignore_default_args": ["--enable-automation"]}
     try:
-        return pw.chromium.launch_persistent_context(str(s.storage_dir / "browser_profile"), channel="chrome", **opts)
+        return pw.chromium.launch_persistent_context(str(s.storage_dir / profile), channel="chrome", **opts)
     except Exception:  # noqa: BLE001 - no Chrome installed: Playwright's own Chromium
-        return pw.chromium.launch_persistent_context(str(s.storage_dir / "browser_profile"), **opts)
+        return pw.chromium.launch_persistent_context(str(s.storage_dir / profile), **opts)
 
 
 def main() -> int:
@@ -207,6 +209,7 @@ def main() -> int:
     ap.add_argument("--platforms", default=",".join(PLATFORMS))
     ap.add_argument("--job", action="append", help="only this job (repeatable)")
     ap.add_argument("--mark-posted", action="store_true", help="record these jobs as already posted by hand, post nothing")
+    ap.add_argument("--profile", default="browser_profile", help="browser profile folder under storage/, one per set of accounts")
     args = ap.parse_args()
     s = Settings()
     platforms = [p for p in args.platforms.split(",") if p]
@@ -225,7 +228,7 @@ def main() -> int:
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
-        ctx = browser(s, pw)
+        ctx = browser(s, pw, args.profile)
         if args.login:
             for p in PLATFORMS:
                 ctx.new_page().goto(URLS[p])
@@ -241,11 +244,13 @@ def main() -> int:
                 m = json.loads((s.storage_dir / "jobs" / job.id / "export" / "manifest.json").read_text(encoding="utf-8"))
                 video = s.storage_dir / "jobs" / job.id / "export" / "video.mp4"
                 page = ctx.new_page()
+                ch = db.get(Channel, job.channel_id) if job.channel_id else None
+                yt_channel = (json.loads(ch.handles_json).get("youtube") if ch else None) or s.youtube_channel_id
                 try:
                     if platform == "tiktok":
                         url = post_tiktok(page, video, m, args.dry_run)
                     elif platform == "youtube_shorts":
-                        url = post_youtube(page, video, m, args.dry_run, s.youtube_channel_id)
+                        url = post_youtube(page, video, m, args.dry_run, yt_channel)
                     else:
                         url = post_facebook(page, video, m, args.dry_run)
                 except Exception as e:  # noqa: BLE001 - one failed post must not stop the others; nothing is recorded for it

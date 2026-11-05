@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import subprocess
 import time
@@ -170,6 +171,8 @@ class EdgeTTS:
     async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
         import edge_tts
 
+        if not (voice or self.voices.get(language)):  # the global channels carry their own Edge voice in channel.voice_id
+            raise ProviderRejected(f"no Edge voice for language {language}: set the channel's voice_id")
         last: Exception | None = None
         # the endpoint intermittently returns NoAudioReceived for valid text; retry per call, not per stage
         for attempt in range(5):
@@ -342,17 +345,19 @@ class FixtureTTS:
 
 
 class LangRouterTTS:
-    """One provider per language: FPT voices Vietnamese only, so an English job (the global channel) goes to Edge."""
+    """One provider per language: FPT voices Vietnamese only, so an English job (the global channel) goes to Edge.
+    `default` takes every other language (the translated global channels, each with its own Edge voice id)."""
 
-    def __init__(self, by_lang: dict):
-        self.by_lang = by_lang
+    def __init__(self, by_lang: dict, default=None):
+        self.by_lang, self.default = by_lang, default
         self.name = "+".join(p.name for p in by_lang.values())
         self.voices = {lang: p.voices[lang] for lang, p in by_lang.items()}
 
     async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
-        if language not in self.by_lang:
+        provider = self.by_lang.get(language, self.default)
+        if provider is None:
             raise ProviderRejected(f"no TTS provider for language {language}")
-        return await self.by_lang[language].synthesize(text, language, out, voice)
+        return await provider.synthesize(text, language, out, voice)
 
 
 def build_llm(s: Settings):
@@ -375,6 +380,16 @@ class StockPhoto:
     author: str
     author_url: str | None = None
     duration_s: float | None = None  # stock video clips only
+
+
+def save_atomic(path: Path, data: bytes) -> None:
+    """Write a cache file whole or not at all: another process sharing storage/stock_cache must never read half a clip."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.part")
+    tmp.write_bytes(data)
+    try:
+        os.replace(tmp, path)
+    except PermissionError:  # Windows: the other process already wrote it and has it open; its copy is complete
+        tmp.unlink(missing_ok=True)
 
 
 class PexelsProvider:
@@ -408,7 +423,7 @@ class PexelsProvider:
             if not cached.is_file():
                 img = await self.client.get(url, follow_redirects=True)
                 img.raise_for_status()
-                cached.write_bytes(img.content)
+                save_atomic(cached, img.content)
             return StockPhoto(cached, str(photo["id"]), photo["url"], photo.get("photographer") or "Pexels contributor", photo.get("photographer_url"))
         except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
             log.warning("pexels search failed for %r", query, exc_info=True)
@@ -451,7 +466,7 @@ class ClipCheck:
             "unless the description asks for it, and not a different animal or object. Order the kept frames best first. "
             'Answer with JSON only: {"keep": [frame numbers]}')})
         try:
-            resp = await self.client.beta.messages.create(model=self.model, max_tokens=300, thinking={"type": "disabled"},
+            resp = await self.client.beta.messages.create(model=self.model, max_tokens=300,  # no thinking arg: Claude 5 rejects {"type": "disabled"} (400), and the error was swallowed, so every clip passed
                                                           output_config={"effort": "low"}, messages=[{"role": "user", "content": content}])
             p_in, p_out = PRICES.get(resp.model, PRICES[self.model])
             self.cost_usd += (resp.usage.input_tokens * p_in + resp.usage.output_tokens * p_out) / 1e6
@@ -547,7 +562,7 @@ class PixabayProvider:
                 if not cached.is_file():
                     clip = await self.client.get(h["videos"]["medium"]["url"], follow_redirects=True)
                     clip.raise_for_status()
-                    cached.write_bytes(clip.content)
+                    save_atomic(cached, clip.content)
                 self.used.add(str(h["id"]))
                 out.append(StockPhoto(cached, str(h["id"]), h["pageURL"], h.get("user") or "Pixabay contributor", duration_s=float(h["duration"])))
                 if len(out) == n:
@@ -579,7 +594,7 @@ class PixabayProvider:
             if not cached.is_file():
                 img = await self.client.get(url, follow_redirects=True)
                 img.raise_for_status()
-                cached.write_bytes(img.content)
+                save_atomic(cached, img.content)
             return StockPhoto(cached, str(hit["id"]), hit["pageURL"], hit.get("user") or "Pixabay contributor")
         except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
             log.warning("pixabay search failed for %r", query, exc_info=True)
@@ -688,8 +703,8 @@ def build_tts(s: Settings):
     if s.tts_provider == "fpt":
         if not (s.fpt_ai_api_key and s.fpt_ai_api_key.get_secret_value()):
             raise ValueError("TTS_PROVIDER=fpt needs FPT_AI_API_KEY in .env")
-        return LangRouterTTS({"vi": FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path),
-                              "en": EdgeTTS({"en": s.tts_voice_en}, s.tts_rate)})
+        edge = EdgeTTS({"en": s.tts_voice_en}, s.tts_rate)
+        return LangRouterTTS({"vi": FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path), "en": edge}, default=edge)
     if s.tts_provider == "elevenlabs":
         if not (s.elevenlabs_api_key and s.elevenlabs_api_key.get_secret_value() and s.elevenlabs_voice_id):
             raise ValueError("TTS_PROVIDER=elevenlabs needs ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env")

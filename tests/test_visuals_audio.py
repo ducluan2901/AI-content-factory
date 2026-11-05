@@ -87,7 +87,8 @@ def test_loudness_normalize_reports_none_on_silence_and_a_real_value_on_a_tone(t
     subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000,volume=-25dB", "-t", "2", str(tone)], check=True)
     assert media.normalize_loudness(FFMPEG, silence, tmp_path / "s_out.wav") is None
     lufs = media.normalize_loudness(FFMPEG, tone, tmp_path / "t_out.wav")
-    assert lufs is not None and abs(lufs - media.LOUDNORM_TARGET_LUFS) < 2.0
+    assert lufs is not None and abs(lufs - media.LOUDNORM_TARGET_LUFS) <= 0.3
+    assert abs(media.duration_s(FFPROBE, tmp_path / "t_out.wav") - 2.0) < 0.05  # level changes, length does not
 
 
 # ---------------------------------------------------------------- providers.py: Pexels (mocked HTTP, no network)
@@ -376,6 +377,64 @@ def test_headline_words_are_drawn_in_colour(tmp_path):
 
 
 @needs_ffmpeg
+def test_brand_card_closes_a_client_video_after_the_voice(tmp_path):
+    s = settings(tmp_path)
+    logo = tmp_path / "logo.png"
+    Image.new("RGBA", (300, 200), (255, 0, 0, 255)).save(logo)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path))
+    with TestClient(app) as c:
+        assert c.post("/jobs", json={"topic": "x y z", "brand_logo": str(logo)}).status_code == 400  # a logo needs a name
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+        plain = d["outputs"]["RENDER"]["duration_s"]
+        # a finished sample gets branded later, when the client says yes: reject, then re-render with the name and logo
+        assert c.post(f"/jobs/{job_id}/reject", json={"approved_by": "t", "notes": "brand it"}).status_code == 200
+        assert c.post(f"/jobs/{job_id}/run", json={"from_stage": "RENDER", "brand_name": "Nha khoa Minh Anh", "brand_logo": str(logo)}).status_code == 200
+        d = run_to_rest(c, job_id)
+        assert c.post(f"/jobs/{job_id}/approve", json={"approved_by": "t"}).status_code == 200
+        caption = (tmp_path / "jobs" / job_id / "export" / "caption.txt").read_text(encoding="utf-8")
+        assert "Previous episode" not in caption  # a client's video is not an episode of the channel
+        # a job born branded: the writer is told about the client and the channel's fixed tags are not forced on
+        job2 = c.post("/jobs", json={"topic": "x y z", "brand_name": "Nha khoa Minh Anh"}).json()["id"]
+        d2 = run_to_rest(c, job2)
+        assert d2["job"]["status"] == "SCRIPT_REVIEW"
+        assert "#viral" not in d2["outputs"]["SCRIPT"]["hashtags"] and "#suthatthuvi" not in d2["outputs"]["SCRIPT"]["hashtags"]
+        assert "Nha khoa Minh Anh" in (tmp_path / "jobs" / job2 / "_llm" / "SCRIPT-1.json").read_text(encoding="utf-8")
+    assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+    assert abs(d["outputs"]["RENDER"]["duration_s"] - plain - media.BRAND_CARD_S) < 0.15
+    assert d["job"]["brand_name"] == "Nha khoa Minh Anh"
+    r, vo = d["outputs"]["RENDER"], d["outputs"]["VOICE"]
+    assert abs(r["duration_s"] - vo["duration_s"] - media.BRAND_CARD_S) < 0.15, (r["duration_s"], vo["duration_s"])
+    assert all(ch["passed"] for ch in d["outputs"]["QUALITY"]["checks"] if ch["severity"] == "error")
+    png = tmp_path / "last.png"  # the last second shows the card: the red logo sits in the upper middle of the frame
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-sseof", "-0.5", "-i", str(tmp_path / r["video_path"]), "-frames:v", "1", str(png)], check=True)
+    px = Image.open(png).convert("RGB").getpixel((media.W // 2, media.H // 2 - 200))
+    assert px[0] > 180 and px[1] < 80 and px[2] < 80, px
+
+
+@needs_ffmpeg
+def test_operator_can_replace_a_scenes_clips_without_paying_for_voice_again(tmp_path):
+    import hashlib
+    s = settings(tmp_path)
+    app = create_app(s, llm=FixtureLLM(FIX / "script_vi.json"), tts=FixtureTTS(s.ffmpeg_path), stock=FixtureStock(tmp_path / "cache", s.ffmpeg_path))
+    with TestClient(app) as c:
+        job_id = c.post("/jobs", json={"topic": "x y z", "review_script": False, "target_duration_s": 55}).json()["id"]
+        d = run_to_rest(c, job_id)
+        assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+        voice = d["outputs"]["VOICE"]["audio_path"]
+        # the operator watches the video, dislikes scene 0's clips, and re-picks them with their own search terms
+        assert c.post(f"/jobs/{job_id}/reject", json={"approved_by": "t", "notes": "scene 0 off-topic"}).status_code == 200
+        assert c.post(f"/jobs/{job_id}/run", json={"from_stage": "VISUALS", "visual_queries": {0: "no"}}).status_code == 400
+        assert c.post(f"/jobs/{job_id}/run", json={"from_stage": "VISUALS", "visual_queries": {0: "blue sky over sea"}}).status_code == 200
+        d = run_to_rest(c, job_id)
+    assert d["job"]["status"] == "AWAITING_APPROVAL", d["job"]["error_summary"]
+    tag = hashlib.sha256(b"blue sky over sea").hexdigest()[:8]  # FixtureStock names its clips after the query
+    by_scene = {a["scene_index"]: a["path"] for a in d["outputs"]["VISUALS"]["assets"]}
+    assert tag in by_scene[0] and tag not in by_scene[1]
+    assert d["outputs"]["VOICE"]["audio_path"] == voice and sum(r["stage"] == "VOICE" for r in d["runs"]) == 1
+
+
+@needs_ffmpeg
 def test_music_is_mixed_under_the_voice_and_keeps_the_length(tmp_path):
     card = tmp_path / "c.png"
     Image.new("RGB", (media.W, media.H), (0, 0, 255)).save(card)
@@ -387,6 +446,21 @@ def test_music_is_mixed_under_the_voice_and_keeps_the_length(tmp_path):
     det = subprocess.run([FFMPEG, "-i", str(out), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
     mean = float(det.split("mean_volume:")[1].split("dB")[0])
     assert -50 < mean < -10, mean  # silent voice + a full-scale sine at MUSIC_GAIN_DB fading out: audible, well under full scale
+
+
+@needs_ffmpeg
+def test_voice_plus_music_stays_under_minus_one_dbtp_after_aac(tmp_path):
+    card = tmp_path / "c.png"
+    Image.new("RGB", (media.W, media.H), (0, 0, 255)).save(card)
+    voice, music, out = tmp_path / "voice.wav", tmp_path / "music.wav", tmp_path / "final.mp4"
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=48000",
+                    "-af", "volume=-1.5dB", "-t", "3", str(voice)], check=True)  # a voice already at the limiter ceiling
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "1", str(music)], check=True)
+    media.render_video(FFMPEG, [card], [3.0], voice, out, music=music)
+    err = subprocess.run([FFMPEG, "-hide_banner", "-nostats", "-i", str(out), "-af", "ebur128=peak=true", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    peak = float(err.rsplit("Peak:", 1)[1].split("dBFS")[0])
+    assert peak <= -1.0, peak  # platforms ask for at most -1 dBTP; without the mix limiter this sum reaches about 0 dBTP
 
 
 def test_hashtags_become_lowercase_ascii():
@@ -601,6 +675,7 @@ async def test_clip_check_drops_the_frames_haiku_rejects_and_degrades_to_tags_on
     assert [c.source_id for c in await prov.search_videos("octopus sea")] == ["3", "1"]  # Haiku's order, 2 dropped
     sent = haiku.calls[0]
     assert sent["model"] == "claude-haiku-5-5" and sum(b["type"] == "image" for b in sent["messages"][0]["content"]) == 3
+    assert "thinking" not in sent  # Claude 5 answers {"type": "disabled"} with a 400, which the except turned into "keep everything"
     assert abs(check.cost_usd - (1000 * 0.10 + 20 * 0.50) / 1e6) < 1e-12
 
     judge = FakeHaiku([0])

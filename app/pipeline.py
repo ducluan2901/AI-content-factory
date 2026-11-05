@@ -24,12 +24,19 @@ from app.db import Approval, Channel, ContentJob, StageRun, latest_ok_run, now
 from app.planner import FORMATS
 from app.providers import ClipCheck, ProviderError, extract_json
 
-LANG_NAMES = {"vi": "Vietnamese", "en": "English"}
+LANG_NAMES = {"vi": "Vietnamese", "en": "English", "es": "Spanish (Latin American)", "pt": "Brazilian Portuguese", "de": "German",
+              "fr": "French", "ja": "Japanese"}
+LANG_RE = "^(" + "|".join(LANG_NAMES) + ")$"  # the API's accepted languages
 # Edge HoaiMy at the default rate, measured: 3.3 syll/s on a 54 s script of long sentences, 2.44 on a 33 s comedy script
 # of short punchy ones (each scene is its own TTS clip, so short scenes carry more padding). With TTS_RATE=+10% and
 # viral-style scripts of very short sentences: 2.11 and 2.31 (each sentence ends in a pause). Every VOICE run records
-# the observed rate; revise this from those numbers. en unmeasured.
-SYLLABLES_PER_S = {"vi": 2.2, "en": 2.2}
+# the observed rate; revise this from those numbers. en counts words, not syllables: Edge Andrew +10% read 42 words in
+# 15.1 s (2.77 words/s) on the first English facts video.
+SYLLABLES_PER_S = {"vi": 2.2, "en": 2.8,
+                   # the translated channels count words too, and ja counts characters (spoken_units). Measured on the first translated
+                   # video (the dog's face, 4 short scenes, Edge +10%): es Jorge 2.11 and 1.89, pt Antonio 1.96, de Conrad 1.54,
+                   # fr Henri 2.29 words/s; ja Keita 5.19 and 5.09 chars/s. Every VOICE run records the observed rate; revise from those
+                   "es": 2.0, "pt": 1.95, "de": 1.55, "fr": 2.25, "ja": 5.1}
 # per voice, vi: Edge is the mean of the last three measurements (2.11, 2.31, 2.59); FPT.TTS-pro is the default voice
 # fci_vietkhoa, 4.21-4.42 on four facts videos (std_quanganh read ~3.4). ElevenLabs unmeasured: the default above.
 VOICE_RATE_VI = {"edge_tts": 2.35, "fpt": 4.3}
@@ -38,6 +45,18 @@ VOICE_RATE_VI = {"edge_tts": 2.35, "fpt": 4.3}
 def speech_rate(s: Settings, language: str) -> float:
     """Spoken syllables per second of the configured voice: sizes the script to the target length."""
     return VOICE_RATE_VI.get(s.tts_provider, SYLLABLES_PER_S["vi"]) if language == "vi" else SYLLABLES_PER_S[language]
+
+
+def spoken_units(text: str, language: str) -> int:
+    """What SYLLABLES_PER_S counts: whitespace-separated syllables (vi) or words, and characters for Japanese, where the
+    translator's phrase spacing varies too much to size a scene by."""
+    return len(text.replace(" ", "")) if language == "ja" else len(text.split())
+
+
+def font_for(s: Settings, language: str) -> str:
+    return s.font_path_ja if language == "ja" else s.font_path
+
+
 MUSIC_EXT = {".mp3", ".wav", ".m4a", ".ogg"}
 CLIP_FORMATS = {"facts"}  # stock video and word-by-word captions; the other formats keep sentence cards for now
 FACTS_TAGS = ["#suthatthuvi", "#khamphathegioi", "#learnontiktok"]  # on 2026-11-02's viral facts videos (200K-17M views)
@@ -81,6 +100,12 @@ def load_prompt(name: str, folder: Path = ROOT / "app" / "prompts") -> tuple[str
     """Template text and its version tag (name@sha8), so every stage_run records exactly which prompt ran."""
     text = (folder / f"{name}.md").read_text(encoding="utf-8")
     return text, f"{name}@{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
+
+
+def guide_name(fmt: str, language: str, folder: Path) -> str:
+    """format_<fmt>_<lang>.md when the format has a guide written for that language, else format_<fmt>.md."""
+    fmt = fmt if fmt in FORMATS else "facts"
+    return f"format_{fmt}_{language}" if (folder / f"format_{fmt}_{language}.md").exists() else f"format_{fmt}"
 
 
 def risky_terms(texts: list[str]) -> list[str]:
@@ -149,7 +174,7 @@ def script_checks(script: ScriptOut, job: ContentJob, est_s: float) -> list[dict
 
 def finish_script(script: ScriptOut, job: ContentJob, job_dir: Path, version: int, rate: float) -> dict:
     """Shared tail of the LLM stage and a human edit: estimate, checks, and the script-v{n}.json artifact."""
-    syll = sum(len(sc.narration.split()) for sc in script.scenes)
+    syll = sum(spoken_units(sc.narration, job.language) for sc in script.scenes)
     est = round(syll / rate, 1)
     out = script.model_dump() | {"version": version, "syllable_count": syll, "estimated_duration_s": est, "checks": script_checks(script, job, est)}
     (job_dir / "script").mkdir(parents=True, exist_ok=True)
@@ -158,11 +183,84 @@ def finish_script(script: ScriptOut, job: ContentJob, job_dir: Path, version: in
 
 
 
+def source_outputs(sm: sessionmaker[Session], source_job_id: str) -> dict:
+    """The approved source job's SCRIPT and VISUALS outputs, the two things a translation reuses."""
+    with sm() as db:
+        src = db.get(ContentJob, source_job_id)
+        runs = {n: latest_ok_run(db, source_job_id, n) for n in ("SCRIPT", "VISUALS")}
+        if not src or not all(runs.values()):
+            raise GateError(f"source job {source_job_id} has no finished script and visuals to translate")
+        return {"job": src, "SCRIPT": json.loads(runs["SCRIPT"].output_json), "VISUALS": json.loads(runs["VISUALS"].output_json)}
+
+
+async def stage_translate(ctx: dict) -> dict:
+    """SCRIPT for a translated job: the source script localised scene for scene (the clips are reused), then one cheap
+    back-check that lists scenes whose meaning drifted, shown as a script check for the reviewer."""
+    s, job = ctx["settings"], ctx["job"]
+    src = source_outputs(ctx["sm"], job.source_job_id)
+    source = {k: src["SCRIPT"][k] for k in ("title", "caption", "hashtags", "scenes", "sources")}
+    n = len(source["scenes"])
+    template, version = load_prompt("translate", s.prompt_dir)
+    # each scene's clips last as long as the source voice did there; the new voice must fit that at its own speed
+    spans = {i: (min(a["start_ms"] for a in src["VISUALS"]["assets"] if a["scene_index"] == i), max(a["end_ms"] for a in src["VISUALS"]["assets"] if a["scene_index"] == i))
+             for i in range(n) if any(a["scene_index"] == i for a in src["VISUALS"]["assets"])}
+    rate = speech_rate(s, job.language)
+    unit = "characters" if job.language == "ja" else "words"
+    budgets = "\n".join(f"- scene {i + 1}: about {max(3, round((spans[i][1] - spans[i][0]) / 1000 * rate))} {unit} ({(spans[i][1] - spans[i][0]) / 1000:.1f} s of clips)"
+                        for i in range(n) if i in spans)
+    prompt = template.format(language_name=LANG_NAMES[job.language], source_language_name=LANG_NAMES.get(src["job"].language, src["job"].language),
+                             source_json=json.dumps(source, ensure_ascii=False), scene_count=n, scene_budgets=budgets,
+                             notes_block=f"\nNotes from the operator: {job.operator_notes}\n" if job.operator_notes else "")
+    log = {"prompt": prompt, "responses": []}
+    log_path = ctx["dir"] / "_llm" / f"SCRIPT-{ctx['attempt']}.json"
+    meta = {"provider": ctx["llm"].name, "cost_usd": 0.0, "log_path": rel(s, log_path), "prompt_version": version}
+    try:
+        for _ in range(2):  # one error-fed repair attempt, as in stage_script
+            resp = await ctx["llm"].complete(prompt, timeout_s=s.stage_timeout_s)
+            log["responses"].append(resp.text)
+            meta.update(model=resp.model, tokens_in=resp.tokens_in, tokens_out=resp.tokens_out)
+            meta["cost_usd"] += resp.cost_usd
+            try:
+                script = ScriptOut.model_validate(extract_json(resp.text))
+                if len(script.scenes) != n:
+                    raise ValueError(f"{len(script.scenes)} scenes, the source has {n}: one scene per source scene, same order")
+                break
+            except (ValueError, ValidationError) as e:
+                err = str(e)[:1500]
+                prompt = f"{prompt}\n\nYour previous answer was invalid:\n{err}\n\nPrevious answer:\n{resp.text[:4000]}\n\nReturn the corrected JSON object only."
+        else:
+            raise SchemaError(f"translation JSON invalid after repair: {err[:300]}")
+        script.sources = source["sources"]  # the facts were checked on the source; its sources stand
+        check_prompt = (f"Source script scenes ({LANG_NAMES.get(src['job'].language, src['job'].language)}):\n"
+                        + json.dumps([sc["narration"] for sc in source["scenes"]], ensure_ascii=False)
+                        + f"\n\nTranslation ({LANG_NAMES[job.language]}):\n" + json.dumps([sc.narration for sc in script.scenes], ensure_ascii=False)
+                        + (f"\n\nThe operator asked the translator for this, so it is not drift: {job.operator_notes}" if job.operator_notes else "")
+                        + "\n\nThe translation is deliberately shorter where its language reads slower; dropped detail is not drift, a dropped fact is."
+                        + "\n\nCompare scene by scene. A scene drifts when the translation changes, adds or drops a fact, a number or a claim; "
+                          "wording and idiom may differ freely. Return ONLY JSON: {\"drifted\": [{\"scene\": <1-based index>, \"why\": \"...\"}]}")
+        resp = await ctx["llm"].complete(check_prompt, timeout_s=s.stage_timeout_s)
+        log["responses"].append(resp.text)
+        meta["cost_usd"] += resp.cost_usd
+        try:
+            drifted = [f"scene {d['scene']}: {d['why']}" for d in extract_json(resp.text).get("drifted", [])]
+        except (ValueError, KeyError, TypeError, AttributeError):
+            drifted = ["back-check unreadable: compare the scenes yourself"]
+    finally:
+        log_path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+    out = finish_script(script, job, ctx["dir"], ctx["attempt"], rate)
+    out["checks"].append({"rule": "translation_fidelity", "passed": not drifted, "expected": "every scene says what the source says",
+                          "actual": "; ".join(drifted) or "no drift found", "message": "A second model pass compared each scene with the source."})
+    out["source_job_id"] = job.source_job_id
+    return out | {"_meta": meta}
+
+
 async def stage_script(ctx: dict) -> dict:
     s, job = ctx["settings"], ctx["job"]
+    if job.source_job_id:
+        return await stage_translate(ctx)
     rate = speech_rate(s, job.language)
     template, v_main = load_prompt("script", s.prompt_dir)
-    guide, v_fmt = load_prompt(f"format_{job.format if job.format in FORMATS else 'facts'}", s.prompt_dir)
+    guide, v_fmt = load_prompt(guide_name(job.format, job.language, s.prompt_dir), s.prompt_dir)
     min_scenes, max_scenes = scene_range(job)
     prompt = template.format(
         topic=job.input_topic,
@@ -175,6 +273,11 @@ async def stage_script(ctx: dict) -> dict:
         min_scenes=min_scenes,
         max_scenes=max_scenes,
     )
+    if job.brand_name:  # a client video closes on the business's card; its tags are the client's, not the channel's
+        prompt += (f"\n\nThis video is made for the business \"{job.brand_name}\" and ends on a card with its name, so never say the name "
+                   "or its services in the narration. hashtags: ignore the format's fixed tags; give 4 to 6 tags that this business's "
+                   "customers search for in {lang} (its field, the problem, the city if the topic names one), lowercase ASCII without "
+                   "diacritics, nothing like #viral or #learnontiktok.").format(lang=LANG_NAMES[job.language])
     if job.operator_notes:  # regeneration: the operator's feedback and the draft it refers to
         prompt += f"\n\nThe operator reviewed a previous draft and asked for these changes:\n{job.operator_notes}"
         if ctx.get("previous"):
@@ -201,7 +304,7 @@ async def stage_script(ctx: dict) -> dict:
         # models undershoot a syllable budget (asked for 119, wrote 87): one rewrite to length, keep whichever is closer
         lo, hi = duration_window(job)
         target = job.target_duration_s * rate
-        syll = sum(len(sc.narration.split()) for sc in script.scenes)
+        syll = sum(spoken_units(sc.narration, job.language) for sc in script.scenes)
         if not lo <= syll / rate <= hi:
             resp = await ctx["llm"].complete(
                 f"{prompt}\n\nPrevious answer:\n{resp.text[:4000]}\n\nThat script has {syll} spoken syllables, about {syll / rate:.0f} s "
@@ -212,13 +315,13 @@ async def stage_script(ctx: dict) -> dict:
             meta["cost_usd"] += resp.cost_usd
             try:
                 again = ScriptOut.model_validate(extract_json(resp.text))
-                if abs(sum(len(sc.narration.split()) for sc in again.scenes) - target) < abs(syll - target):
+                if abs(sum(spoken_units(sc.narration, job.language) for sc in again.scenes) - target) < abs(syll - target):
                     script = again
             except (ValueError, ValidationError):
                 pass  # the first valid draft stands; the script checks show its length
     finally:
         log_path.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
-    if job.format == "facts":  # the viral facts videos' tags, spelled right every time (a draft wrote #sudthuthuvi)
+    if job.format == "facts" and job.language == "vi" and not job.brand_name:  # the viral facts videos' tags, spelled right every time (a draft wrote #sudthuthuvi)
         own = [t for t in script.hashtags if t not in FACTS_TAGS + ["#viral"]]
         script.hashtags = (FACTS_TAGS + own)[:7] + ["#viral"]
     return finish_script(script, job, ctx["dir"], ctx["attempt"], rate) | {"_meta": meta}
@@ -255,16 +358,19 @@ async def stage_visuals(ctx: dict) -> dict:
     ship an asset with an unrecorded licence). Each card starts exactly when its sentence does, from the voice
     stage's sentence boundaries, and a scene's cards together cover the scene's voice span."""
     s, scenes, stock, vo = ctx["settings"], ctx["up"]["SCRIPT"]["scenes"], ctx.get("stock"), ctx["up"]["VOICE"]
-    d = ctx["dir"] / "visuals" / "cards"
+    if ctx["job"].source_job_id:
+        return copy_visuals(s, source_outputs(ctx["sm"], ctx["job"].source_job_id)["VISUALS"], vo)
+    d, font = ctx["dir"] / "visuals" / "cards", font_for(s, ctx["job"].language)
     # clip formats: stock video shots of at most SHOT_MS instead, the words go on screen as word-by-word captions at
     # render, so a scene without clips gets text-free cards
     clips_on = ctx["job"].format in CLIP_FORMATS and hasattr(stock, "search_videos")
     assets, stock_hits, pool = [], 0, []
     check = getattr(stock, "check", None)
     spent0 = check.cost_usd if check else 0.0  # shortcut: two jobs in VISUALS at once would share this delta; jobs run one at a time today
+    overrides = json.loads(ctx["job"].visual_queries_json or "{}")  # the operator's search terms for scenes whose clips missed
     for i, sc in enumerate(scenes):
         span = vo["scenes"][i]
-        query = sc.get("visual_query") or sc["on_screen_text"]
+        query = overrides.get(str(i)) or sc.get("visual_query") or sc["on_screen_text"]
         clips = await stock.search_videos(query) if clips_on else []
         photo = None if clips else await stock.search_photo(query) if stock else None
         stock_hits += bool(clips or photo)
@@ -298,20 +404,43 @@ async def stage_visuals(ctx: dict) -> dict:
             text = "" if clips_on else seg["text"]
             p = d / f"{len(assets):02}.png"
             timing = {"scene_index": i, "order_index": len(assets), "start_ms": bounds[k], "end_ms": bounds[k + 1], "path": rel(s, p),
-                      "width": media.W, "height": media.H, "font": Path(s.font_path).name}
+                      "width": media.W, "height": media.H, "font": Path(font).name}
             if photo:
-                await asyncio.to_thread(media.render_photo_card, photo.path, text, i, s.font_path, p, words)
+                await asyncio.to_thread(media.render_photo_card, photo.path, text, i, font, p, words)
                 assets.append({"kind": "stock_image", "source_provider": stock.name, "source_url": photo.source_url, "source_id": photo.source_id,
                                "author": photo.author, "licence": stock.licence, "licence_url": stock.licence_url,
                                "attribution_required": False, "attribution_text": stock.attribution(photo)} | timing)
             else:
-                await asyncio.to_thread(media.render_card, text, i, s.font_path, p, words)
+                await asyncio.to_thread(media.render_card, text, i, font, p, words)
                 # licence ledger (PRD D3): generated cards are ours; the font is the only third-party input
                 assets.append({"kind": "title_card", "source_provider": "title_card", "licence": "generated", "attribution_required": False,
                                "attribution_text": None} | timing)
     return {"assets": assets, "stock_hits": stock_hits, "captions": "words" if clips_on else "cards",
-            "_meta": {"provider": stock.name if stock else "title_card", "model": ClipCheck.MODEL if check else "pillow",
+            "_meta": {"provider": stock.name if stock else "title_card", "model": check.model if check else "pillow",
                       "cost_usd": round(check.cost_usd - spent0, 6) if check else 0.0}}
+
+
+def copy_visuals(s: Settings, src: dict, vo: dict) -> dict:
+    """VISUALS for a translated job: the source scene's clips (already checked and licensed), re-cut over the new
+    voice's span of that scene in SHOT_MS shots, the way stage_visuals cuts fresh clips. Nothing is searched or paid for."""
+    by_scene: dict[int, list[dict]] = {}
+    for a in src["assets"]:
+        if a["path"] not in {x["path"] for x in by_scene.setdefault(a["scene_index"], [])}:
+            by_scene[a["scene_index"]].append(a)
+    assets = []
+    for span in vo["scenes"]:
+        clips = by_scene.get(span["scene_index"]) or by_scene[max(by_scene)]
+        if missing := [c["path"] for c in clips if not (s.storage_dir / c["path"]).is_file()]:
+            raise GateError(f"source clip missing from storage: {missing[0]}")
+        n = max(1, math.ceil((span["end_ms"] - span["start_ms"]) / SHOT_MS))
+        step = (span["end_ms"] - span["start_ms"]) / n
+        for k in range(n):
+            clip = clips[k % len(clips)]
+            assets.append({key: clip[key] for key in clip if key not in ("order_index", "start_ms", "end_ms", "scene_index")}
+                          | {"scene_index": span["scene_index"], "order_index": len(assets), "start_ms": span["start_ms"] + round(k * step),
+                             "end_ms": span["start_ms"] + round((k + 1) * step)})
+    return {"assets": assets, "stock_hits": src.get("stock_hits", 0), "captions": src.get("captions", "words"),
+            "_meta": {"provider": "copied", "model": None, "cost_usd": 0.0}}
 
 
 def pick_music(s: Settings, job_id: str) -> Path | None:
@@ -339,15 +468,20 @@ async def stage_render(ctx: dict) -> dict:
     s, up = ctx["settings"], ctx["up"]
     cards = [s.storage_dir / a["path"] for a in up["VISUALS"]["assets"]]
     durs = [(a["end_ms"] - a["start_ms"]) / 1000 for a in up["VISUALS"]["assets"]]
-    d = ctx["dir"] / "render"
+    d, font = ctx["dir"] / "render", font_for(s, ctx["job"].language)
     out, thumb = d / "final.mp4", d / "thumb.jpg"
     words = up["VISUALS"].get("captions") == "words"  # word captions are the clip formats' only text, so always burned
     burn = words or ctx["job"].burn_subtitles
     subs = s.storage_dir / up["SUBTITLES"]["ass_path" if words else "srt_path"] if burn else None
     music = pick_music(s, ctx["job"].id)
+    offsets, tail = [a.get("clip_offset_s", 0.0) for a in up["VISUALS"]["assets"]], 0.0
+    if ctx["job"].brand_name:  # client video: closing card with the name and logo, held after the voice ends
+        logo = ctx["job"].brand_logo_path
+        await asyncio.to_thread(media.render_brand_card, ctx["job"].brand_name, Path(logo) if logo else None, font, d / "brand.png")
+        cards, durs, offsets, tail = cards + [d / "brand.png"], durs + [media.BRAND_CARD_S], offsets + [0.0], media.BRAND_CARD_S
     cmd = await asyncio.to_thread(media.render_video, s.ffmpeg_path, cards, durs, s.storage_dir / up["VOICE"]["audio_path"], out,
-                                  subs, s.font_path if burn else None, music, [a.get("clip_offset_s", 0.0) for a in up["VISUALS"]["assets"]],
-                                  [x["start_ms"] / 1000 for x in up["VOICE"]["scenes"][1:]] if words else None)
+                                  subs, font if burn else None, music, offsets,
+                                  [x["start_ms"] / 1000 for x in up["VOICE"]["scenes"][1:]] if words else None, tail)
     await asyncio.to_thread(media.run, [s.ffmpeg_path, "-y", "-v", "error", "-ss", "0.3", "-i", str(out), "-frames:v", "1", "-q:v", "3", str(thumb)])
     info = media.probe(s.ffprobe_path, out)
     v = next((x for x in info["streams"] if x["codec_type"] == "video"), {})
@@ -362,8 +496,10 @@ async def stage_render(ctx: dict) -> dict:
 async def stage_quality(ctx: dict) -> dict:
     up = ctx["up"]
     r, sc, sub, vo = up["RENDER"], up["SCRIPT"], up["SUBTITLES"], up["VOICE"]
+    tail = media.BRAND_CARD_S if ctx["job"].brand_name else 0.0
     # the format only sets the default target; the gate judges against the job's own target
     lo, hi = duration_window(ctx["job"])
+    broken = await asyncio.to_thread(media.decode_errors, ctx["settings"].ffmpeg_path, ctx["settings"].storage_dir / r["video_path"])
 
     def check(rule, severity, passed, expected, actual, message):
         return {"rule": rule, "severity": severity, "passed": bool(passed), "expected": str(expected), "actual": str(actual), "message": message}
@@ -373,8 +509,11 @@ async def stage_quality(ctx: dict) -> dict:
               f"Video length is inside the {lo}-{hi}s window." if lo <= r["duration_s"] <= hi else f"Video length is outside {lo}-{hi}s: lengthen or shorten the script."),
         check("aspect_ratio", "error", (r["width"], r["height"]) == (1080, 1920), "1080x1920", f"{r['width']}x{r['height']}", "Vertical 9:16 resolution."),
         check("codecs", "error", (r["video_codec"], r["audio_codec"]) == ("h264", "aac"), "h264/aac", f"{r['video_codec']}/{r['audio_codec']}", "Platform-safe codecs."),
+        check("decodes", "error", broken == 0, "0 decode errors", f"{broken} error line(s)",
+              "Every frame decodes." if not broken else "The video has broken frames (a source clip was damaged): re-run from VISUALS."),
         check("audio_present", "error", r["audio_codec"] is not None and vo["duration_s"] > 1, "voice-over", f"{vo['duration_s']}s", "Voice-over is present."),
-        check("av_sync", "error", abs(r["duration_s"] - vo["duration_s"]) <= 0.3, "<=0.3s drift", f"{abs(r['duration_s'] - vo['duration_s']):.2f}s", "Video and voice-over lengths match."),
+        check("av_sync", "error", abs(r["duration_s"] - vo["duration_s"] - tail) <= 0.3, "<=0.3s drift", f"{abs(r['duration_s'] - vo['duration_s'] - tail):.2f}s",
+              "Video and voice-over lengths match." if not tail else "Video is the voice-over plus the closing card."),
         check("asset_licence", "error", all(a["licence"] != "unknown" for a in up["VISUALS"]["assets"]), "no unknown licence",
               ",".join(sorted({a["licence"] for a in up["VISUALS"]["assets"]})), "Every visual asset has a recorded licence."),
         check("loudness", "warning", vo.get("loudness_lufs") is not None and abs(vo["loudness_lufs"] - media.LOUDNORM_TARGET_LUFS) <= 1.5,
@@ -390,15 +529,11 @@ async def stage_quality(ctx: dict) -> dict:
         check("claim_grounding", "warning", False, "sourced claims", f"{len(sc.get('sources', []))} source(s) named by the writer, none opened",
               "Claims are not source-checked in this version: open the listed sources and verify the facts before approving."),
     ]
-    blocking = [c for c in checks if c["severity"] == "error" and not c["passed"]]
-    return {"checks": checks, "passed": not blocking, "_meta": {"provider": "quality_gate", "cost_usd": round(cost, 6)}}
-
-
-# (name, fn, max_attempts)
-STAGES = [
-    ("SCRIPT", stage_script, 2),
     s, cost = ctx["settings"], 0.0
-    if s.qa_review and s.llm_provider != "fixture" and s.anthropic_api_key:
+    if ctx["job"].source_job_id:  # the frames and facts were reviewed on the source; a paid second look buys nothing
+        checks.append(check("qa_review", "warning", True, "reviewed on the source", f"translation of {ctx['job'].source_job_id}",
+                            "Same clips as the source job: check the captions' font and line breaks, not the pictures."))
+    elif s.qa_review and s.llm_provider != "fixture" and s.anthropic_api_key:
         import anthropic
 
         try:
@@ -408,6 +543,13 @@ STAGES = [
         except Exception:  # noqa: BLE001 - advisory: a broken frame grab must not fail a finished render
             data = None
         checks.append(qa_review.as_check(data))
+    blocking = [c for c in checks if c["severity"] == "error" and not c["passed"]]
+    return {"checks": checks, "passed": not blocking, "_meta": {"provider": "quality_gate", "cost_usd": round(cost, 6)}}
+
+
+# (name, fn, max_attempts)
+STAGES = [
+    ("SCRIPT", stage_script, 2),
     ("VOICE", stage_voice, 3),
     ("VISUALS", stage_visuals, 1),
     ("SUBTITLES", stage_subtitles, 1),
@@ -447,7 +589,7 @@ class Pipeline:
                 with self.sm() as db:
                     prev = db.scalars(select(StageRun).where(StageRun.job_id == job.id, StageRun.stage == name, StageRun.status == "OK").order_by(StageRun.attempt.desc())).first()
             ctx = {"settings": self.s, "llm": self.llm, "tts": self.tts, "stock": self.stock, "job": job, "dir": self.job_dir(job.id), "attempt": attempt, "up": up,
-                   "previous": json.loads(prev.output_json) if prev else None, "voice": voice}
+                   "previous": json.loads(prev.output_json) if prev else None, "voice": voice, "sm": self.sm}
             try:
                 out = await asyncio.wait_for(fn(ctx), timeout=self.s.stage_timeout_s)
                 status, err = "OK", None
@@ -631,7 +773,11 @@ def export(db: Session, s: Settings, job_id: str) -> dict:
         shutil.copyfile(s.storage_dir / src, d / dst)
     media.upload_copy(s.ffmpeg_path, s.ffprobe_path, d / "video.mp4", d / "upload.mp4")  # what gets posted from the browser
     sc = out["SCRIPT"]
-    (d / "caption.txt").write_text(f"{sc['title']}\n\n{sc['caption']}\n\n{' '.join(sc['hashtags'])}\n", encoding="utf-8")
+    # pinned comment: the caption's closing question, plus the link to the previous episode (the only clickable link a Short gets);
+    # a client's video has no previous episode
+    question = re.split(r"(?<=[.!?])\s+", sc["caption"].strip())[-1]
+    (d / "caption.txt").write_text(f"{sc['title']}\n\n{sc['caption']}\n\n{' '.join(sc['hashtags'])}\n\n"
+                                   f"--- pinned comment ---\n{question}\n" + ("" if job.brand_name else "Previous episode: <paste link>\n"), encoding="utf-8")
     apr = db.get(Approval, job.approval_id)
     manifest = {
         "job_id": job.id, "topic": job.input_topic, "language": lang, "platforms": json.loads(job.target_platforms),

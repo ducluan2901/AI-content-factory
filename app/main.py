@@ -22,20 +22,25 @@ Score = Field(default=None, ge=0, le=100)
 
 
 class JobIn(BaseModel):
-    topic: str = Field(min_length=3, max_length=500)
+    topic: str | None = Field(default=None, min_length=3, max_length=500)  # optional only with source_job_id (the source's topic then)
+    # translation of a finished job for a global channel: its script localised, its clips reused; needs a channel in the new language
+    source_job_id: str | None = None
+    notes: str | None = Field(default=None, max_length=500)  # translation only: e.g. "Next: your cat" for the closing line
     product_desc: str | None = Field(default=None, max_length=2000)
-    language: str = Field(default="vi", pattern="^(vi|en)$")
+    language: str = Field(default="vi", pattern=pipeline.LANG_RE)
     format: str = Field(default="facts", pattern=FORMAT_RE)
     channel_id: str | None = None
     target_duration_s: int | None = Field(default=None, ge=15, le=90)  # None: the format's default
     review_script: bool = True  # pause at SCRIPT_REVIEW before voice and render
     burn_subtitles: bool = False  # hard-code the subtitles into the video (SRT/VTT are always exported)
+    brand_name: str | None = Field(default=None, min_length=1, max_length=80)  # client video: closing card with this name
+    brand_logo: str | None = Field(default=None, max_length=500)  # path on this machine to the client's PNG logo (needs brand_name)
 
 
 class ChannelIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     market: str = Field(default="vn", pattern="^(vn|global)$")
-    language: str = Field(default="vi", pattern="^(vi|en)$")
+    language: str = Field(default="vi", pattern=pipeline.LANG_RE)
     positioning: str | None = Field(default=None, max_length=500)
     voice_id: str | None = Field(default=None, max_length=100)
     handles: dict[str, str] = {}
@@ -48,7 +53,7 @@ class TrendIn(BaseModel):
     source_url: str | None = Field(default=None, max_length=1000)
     observed_at: str | None = None
     market: str = Field(default="vn", pattern="^(vn|global)$")
-    language: str = Field(default="vi", pattern="^(vi|en)$")
+    language: str = Field(default="vi", pattern=pipeline.LANG_RE)
     format: str = Field(default="facts", pattern=FORMAT_RE)
     velocity: float | None = Score
     retention_potential: float | None = Score
@@ -168,6 +173,10 @@ class MetricIn(BaseModel):
 
 class RerunIn(BaseModel):
     from_stage: str | None = None
+    brand_name: str | None = Field(default=None, min_length=1, max_length=80)  # set with from_stage RENDER to brand a finished video
+    brand_logo: str | None = Field(default=None, max_length=500)
+    # {scene_index: English stock search terms}: replaces the writer's visual_query for that scene on a VISUALS re-run
+    visual_queries: dict[int, str] | None = None
 
 
 class ScriptEditIn(BaseModel):
@@ -249,10 +258,28 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
         with sm() as db:
             if body.channel_id:
                 get_or_404(db, Channel, body.channel_id)
-            job = ContentJob(title=body.topic[:120], input_kind="product" if body.product_desc else "topic", input_topic=body.topic,
+            if body.brand_logo and not (body.brand_name and Path(body.brand_logo).is_file()):
+                raise HTTPException(400, "brand_logo needs brand_name and must be an existing image file")
+            if body.source_job_id:
+                try:
+                    src = pipeline.source_outputs(sm, body.source_job_id)
+                except pipeline.GateError as e:
+                    raise HTTPException(409, str(e))
+                channel = get_or_404(db, Channel, body.channel_id) if body.channel_id else None
+                if not channel:
+                    raise HTTPException(400, "a translation needs channel_id: the channel sets the language and the voice")
+                if channel.language == src["job"].language:
+                    raise HTTPException(409, f"channel speaks {channel.language}, the same as the source job")
+                if src["VISUALS"].get("captions") != "words":
+                    raise HTTPException(409, "the source's cards carry its language on screen; only clip videos (facts) translate")
+                body.language, body.format, body.topic = channel.language, src["job"].format, body.topic or src["job"].input_topic
+                body.target_duration_s = src["job"].target_duration_s
+            elif not body.topic:
+                raise HTTPException(422, "topic is required")
+            job = ContentJob(brand_name=body.brand_name, brand_logo_path=body.brand_logo,title=body.topic[:120], input_kind="product" if body.product_desc else "topic", input_topic=body.topic,
                              input_product_desc=body.product_desc, language=body.language, format=body.format, channel_id=body.channel_id,
                              target_duration_s=body.target_duration_s or planner.default_duration(body.format), review_script=body.review_script, burn_subtitles=body.burn_subtitles,
-                             profile=s.app_env, status="QUEUED")
+                             profile=s.app_env, status="QUEUED", source_job_id=body.source_job_id, operator_notes=body.notes if body.source_job_id else None)
             db.add(job)
             db.commit()
             await queue.put(job.id)
@@ -623,7 +650,15 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
     @app.post("/jobs/{job_id}/run")
     async def rerun(job_id: str, body: RerunIn):
         with sm() as db:
-            get_job(db, job_id)
+            job = get_job(db, job_id)
+            if body.brand_logo and not (body.brand_name and Path(body.brand_logo).is_file()):
+                raise HTTPException(400, "brand_logo needs brand_name and must be an existing image file")
+            if body.brand_name:
+                job.brand_name, job.brand_logo_path = body.brand_name, body.brand_logo
+            if body.visual_queries:
+                if any(not 3 <= len(q.strip()) <= 120 for q in body.visual_queries.values()):
+                    raise HTTPException(400, "each visual query is 3 to 120 characters")
+                job.visual_queries_json = json.dumps(json.loads(job.visual_queries_json or "{}") | {str(k): v.strip() for k, v in body.visual_queries.items()})
             try:
                 job = pipeline.requeue(db, job_id, body.from_stage)
             except pipeline.GateError as e:

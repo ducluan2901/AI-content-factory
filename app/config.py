@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     font_path: str = r"C:\Windows\Fonts\segoeuib.ttf"
+    font_path_ja: str = r"C:\Windows\Fonts\YuGothB.ttc"  # Japanese captions: Segoe has no kana or kanji (Yu Gothic ships with Windows 10/11)
     database_url: str = "sqlite:///./storage/factory.db"
     storage_dir: Path = Path("./storage")
     fixture_dir: Path = ROOT / "tests" / "fixtures"

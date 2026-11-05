@@ -56,7 +56,7 @@ job_status      : DRAFT · QUEUED · RUNNING · NEEDS_REVISION · AWAITING_APPRO
 stage_name      : INTAKE · RESEARCH · STRATEGY · SCRIPT · SEO · VOICE · VISUALS
                 · SUBTITLES · RENDER · QUALITY · EXPORT
 stage_status    : PENDING · RUNNING · OK · FAILED · TIMEOUT · SKIPPED · NEEDS_HUMAN
-language        : vi · en
+language        : vi · en · es · pt · de · fr · ja (translated global channels)
 platform        : tiktok · youtube_shorts · facebook_reels
 asset_kind      : stock_video · stock_image · title_card · generated_image · music · other
 licence_kind    : pexels · pixabay · cc0 · cc_by · owned · generated · unknown
@@ -88,7 +88,7 @@ FAILED   → QUEUED | CANCELLED
 | `input_kind` | TEXT NOT NULL | `topic` \| `product` |
 | `input_topic` | TEXT | raw operator input |
 | `input_product_desc` | TEXT | raw operator input (business product mode) |
-| `language` | TEXT NOT NULL | `vi` \| `en` |
+| `language` | TEXT NOT NULL | `vi` \| `en` \| `es` \| `pt` \| `de` \| `fr` \| `ja` |
 | `target_platforms` | TEXT NOT NULL | JSON array of `platform` |
 | `target_duration_s` | INTEGER NOT NULL | default from the format (plan §4.2), CHECK 15..90 |
 | `channel_id` | TEXT FK → channel.id | null for jobs submitted without a channel |

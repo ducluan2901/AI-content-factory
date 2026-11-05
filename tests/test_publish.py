@@ -47,5 +47,14 @@ def test_youtube_title_names_the_series_only_for_series_topics():
     assert publish.youtube_title({"title": "Mắt bạn", "topic": "mắt"}) == "Mắt bạn #Shorts"
 
 
+def test_long_video_chapter_names_come_from_the_title():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("compile_long", Path(__file__).parent.parent / "scripts" / "compile_long.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert m.chapter_name("Mũi chó nhà bạn làm được 3 việc: vân mũi riêng") == "Mũi chó nhà bạn làm được 3 việc"
+    assert m.chapter_name("Lúc bạn đi vắng, chó nhà bạn làm 3 việc. Việc thứ 3 lạ nhất") == "Lúc bạn đi vắng, chó nhà bạn làm 3 việc"
+
+
 def test_tiktok_caption_has_no_search_line_for_unknown_subjects():
     assert publish.tiktok_caption({"caption": "Cá voi hát.", "hashtags": ["#cavoi", "#viral"]}) == "Cá voi hát. #cavoi #viral"
