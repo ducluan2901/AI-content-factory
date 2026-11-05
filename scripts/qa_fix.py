@@ -67,16 +67,19 @@ def drop_overused(assets: list[dict], scene_index: int) -> list[dict] | None:
     return out
 
 
-async def fix(job_id: str, s: Settings, sm, client, dry: bool) -> str:
+async def fix(job_id: str, s: Settings, sm, client, dry: bool, manual: list[dict] | None = None) -> str:
     with sm() as db:
         up = {n: latest_ok_run(db, job_id, n) for n in ("SCRIPT", "VOICE", "VISUALS", "RENDER")}
         if not all(up.values()):
             return f"{job_id}: not rendered yet"
         out = {n: json.loads(r.output_json) for n, r in up.items()}
-    frames = await asyncio.to_thread(qa_review.scene_frames, s.ffmpeg_path, str(s.storage_dir / out["RENDER"]["video_path"]), out["VOICE"]["scenes"])
-    data, cost = await qa_review.review(client, s.qa_review_model, out["SCRIPT"]["scenes"], out["SCRIPT"].get("sources", []), frames)
-    check = qa_review.as_check(data)
-    flagged = check.get("scenes") or []
+    if manual:  # a person named the scenes: no reviewer call (works while the API is unavailable)
+        check, cost, flagged = {"actual": "manual"}, 0.0, list(manual)
+    else:
+        frames = await asyncio.to_thread(qa_review.scene_frames, s.ffmpeg_path, str(s.storage_dir / out["RENDER"]["video_path"]), out["VOICE"]["scenes"])
+        data, cost = await qa_review.review(client, s.qa_review_model, out["SCRIPT"]["scenes"], out["SCRIPT"].get("sources", []), frames)
+        check = qa_review.as_check(data)
+        flagged = check.get("scenes") or []
     # rule, not model judgement: an over-used clip is replaced whatever the reviewer says (it once scored such a video 9/10)
     for i in sorted({a["scene_index"] for a in out["VISUALS"]["assets"] if str(a.get("source_id")) in OVERUSED}):
         if all(f["scene"] != i + 1 for f in flagged):
@@ -138,7 +141,12 @@ async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--job", action="append", required=True)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--scene", type=int, action="append", help="fix this scene (1-based) without the QA reviewer; pair with --query")
+    ap.add_argument("--query", action="append", help="English stock search for the matching --scene")
     args = ap.parse_args()
+    if (args.scene or args.query) and (len(args.job) != 1 or len(args.scene or []) != len(args.query or [])):
+        ap.error("--scene/--query come in pairs and need exactly one --job")
+    manual = [{"scene": n, "issue": "chosen by hand", "query": q} for n, q in zip(args.scene or [], args.query or [])]
     s = Settings()
     assert STAGE_NAMES.index("VISUALS") < STAGE_NAMES.index("SUBTITLES")
     sm = make_sessionmaker(s.database_url, create=False)
@@ -151,7 +159,7 @@ async def main() -> int:
             return 1
     for jid in args.job:
         try:
-            print(await fix(jid, s, sm, client, args.dry_run))
+            print(await fix(jid, s, sm, client, args.dry_run, manual))
         except Exception as e:  # noqa: BLE001 - one broken job must not stop the others
             print(f"{jid}: failed ({type(e).__name__}: {e})")
     return 0
