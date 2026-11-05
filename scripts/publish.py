@@ -51,11 +51,13 @@ def tiktok_caption(m: dict) -> str:
     return f"{search}{m['caption']} " + " ".join(m["hashtags"])
 
 
-SERIES = "Thú cưng nhà bạn"
+SERIES = ("Cơ thể bạn", "Thú cưng nhà bạn")  # the first one named in the topic wins; a series topic naming none is a pet one
 
 
 def youtube_title(m: dict) -> str:
-    tail = f" | {SERIES} #Shorts" if "series" in (m.get("topic") or "").lower() else " #Shorts"  # same name on every series video
+    topic = (m.get("topic") or "").lower()
+    name = next((s for s in SERIES if s.lower() in topic), SERIES[-1]) if "series" in topic else None
+    tail = f" | {name} #Shorts" if name else " #Shorts"  # same name on every video of a series
     return f"{m['title'][:100 - len(tail)].rstrip()}{tail}"  # YouTube titles stop at 100 characters
 
 

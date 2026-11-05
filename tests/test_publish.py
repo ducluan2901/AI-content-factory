@@ -45,6 +45,7 @@ def test_youtube_title_names_the_series_only_for_series_topics():
     series = publish.youtube_title({"title": "x" * 120, "topic": "Tai chó. Series Thú cưng nhà bạn đang giấu gì. Mai: lưỡi mèo"})
     assert series.endswith(" | Thú cưng nhà bạn #Shorts") and len(series) <= 100
     assert publish.youtube_title({"title": "Mắt bạn", "topic": "mắt"}) == "Mắt bạn #Shorts"
+    assert publish.youtube_title({"title": "Ngón áp út", "topic": "Thử ngay. Series Cơ thể bạn – thử ngay. Mai: cuộn lưỡi"}) == "Ngón áp út | Cơ thể bạn #Shorts"
 
 
 def test_long_video_chapter_names_come_from_the_title():
