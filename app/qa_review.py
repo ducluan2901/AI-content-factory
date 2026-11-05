@@ -18,12 +18,13 @@ Sources named by the writer:
 {sources}
 
 Report only problems a viewer would notice or a fact-checker would reject; say nothing about what is fine.
-1. Scene: the frame shows a different species or subject than the narration (a tiger in a cat scene, no person in a human-eye scene), is visibly the same clip as another scene, or is a still card or nearly black. A related stock shot of the right subject is ok even if the exact action is not visible.
+1. Scene: the frame shows a different species or subject than the narration (a tiger in a cat scene, no person in a human-eye scene), is visibly the same clip as another scene, or is a still card or nearly black. The frame must show the scene's main subject and its main action, as the writer's search line names them: for "dog yawning" a dog just sitting is a problem, for "man yawning with dog" a person walking is a problem. Comparisons, tips and consequences in the narration need only the right subject. Flag what a viewer would see as wrong, not what a single frame happens to leave out.
 2. Fact: a claim that is wrong, or clearly stronger than the named source states. Not style, not wording, not mild simplification.
-3. Structure: the spoken numbering ("số hai", "số ba") skips or does not match the facts. The hook naming "số ba" before fact 1 is a deliberate open loop, not a problem.
+3. Structure: the spoken numbering ("số hai", "số ba") skips or does not match the facts. The hook naming "số ba" before fact 1 is a deliberate open loop, not a problem; in a "Phần 1" video the last promised fact is deliberately missing; a "Đúng hay sai" video has no numbers at all.
 At most 5 issues in total, each one short Vietnamese sentence of at most 20 words. A scene with no problem gets "ok": true and an empty issue.
+For a scene with a problem, also give "query": a new 2-4 word English stock-video search that keeps the subject words of the writer's search (species, and the breed when it names one) and changes only the action to one stock sites really have ("british shorthair yawning", "dog yawning close up"), so the clip can be replaced.
 Answer with JSON only:
-{{"scenes": [{{"scene": 1, "ok": true, "issue": ""}}], "facts": ["fact or structure issue; empty list if none"], "score": 1-10}}"""
+{{"scenes": [{{"scene": 1, "ok": true, "issue": ""}}, {{"scene": 2, "ok": false, "issue": "...", "query": "..."}}], "facts": ["fact or structure issue; empty list if none"], "score": 1-10}}"""
 
 
 def scene_frames(ffmpeg: str, video: str, timeline: list[dict]) -> list[bytes]:
@@ -66,9 +67,12 @@ def as_check(data: dict | None) -> dict:
     issues = issues[:5]  # the model sometimes lists more than asked; the console row stays readable
     score = data.get("score")
     ok = not issues
+    # the flagged scenes as data (1-based, as the reviewer saw them), for the auto-fix loop to re-pick clips
+    bad = [{"scene": s["scene"], "issue": s.get("issue", ""), "query": (s.get("query") or "").strip()}
+           for s in data["scenes"] if not s.get("ok", True) and isinstance(s.get("scene"), int)]
     return {"rule": "qa_review", "severity": "warning", "passed": ok, "expected": "no scene or fact issue",
             "actual": f"score {score}/10, {len(issues)} issue(s)",
-            "message": "QA reviewer found nothing to fix." if ok else "QA: " + "; ".join(issues)}
+            "message": "QA reviewer found nothing to fix." if ok else "QA: " + "; ".join(issues), "scenes": bad}
 
 
 if __name__ == "__main__":  # self-check of the parsing, no API call

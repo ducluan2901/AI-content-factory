@@ -73,7 +73,7 @@ class AnthropicApiProvider:
         try:
             resp = await self.client.with_options(timeout=timeout_s).beta.messages.create(
                 model=self.model,
-                max_tokens=16000,
+                max_tokens=20000,  # effort=high sometimes thinks past 16k; above ~21k the SDK demands streaming
                 messages=[{"role": "user", "content": prompt}],
                 output_config={"effort": self.effort},
                 # on a safety decline the API re-runs the request on a fallback model it picks
