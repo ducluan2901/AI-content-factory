@@ -47,6 +47,11 @@ def speech_rate(s: Settings, language: str) -> float:
     return VOICE_RATE_VI.get(s.tts_provider, SYLLABLES_PER_S["vi"]) if language == "vi" else SYLLABLES_PER_S[language]
 
 
+# the next-episode line a translated video ends on ("Mañana: tu gato."), the one reason a Short gives to subscribe
+NEXT_WORD = {"vi": "Mai:", "en": "Tomorrow:", "es": "Mañana:", "pt": "Amanhã:", "de": "Morgen:", "fr": "Demain :", "ja": "次は"}
+NEXT_RESERVE = {"words": 3, "characters": 7}  # what that line takes out of the last scene's budget
+
+
 def spoken_units(text: str, language: str) -> int:
     """What SYLLABLES_PER_S counts: whitespace-separated syllables (vi) or words, and characters for Japanese, where the
     translator's phrase spacing varies too much to size a scene by."""
@@ -206,10 +211,12 @@ async def stage_translate(ctx: dict) -> dict:
              for i in range(n) if any(a["scene_index"] == i for a in src["VISUALS"]["assets"])}
     rate = speech_rate(s, job.language)
     unit = "characters" if job.language == "ja" else "words"
-    budgets = "\n".join(f"- scene {i + 1}: about {max(3, round((spans[i][1] - spans[i][0]) / 1000 * rate))} {unit} ({(spans[i][1] - spans[i][0]) / 1000:.1f} s of clips)"
+    # the "Tomorrow: X." line is added by code (models drop it when the budget is tight), so its length comes off the last scene
+    reserve = {i: NEXT_RESERVE[unit] if i == n - 1 else 0 for i in range(n)}
+    budgets = "\n".join(f"- scene {i + 1}: about {max(3, round((spans[i][1] - spans[i][0]) / 1000 * rate) - reserve[i])} {unit} ({(spans[i][1] - spans[i][0]) / 1000:.1f} s of clips)"
                         for i in range(n) if i in spans)
     prompt = template.format(language_name=LANG_NAMES[job.language], source_language_name=LANG_NAMES.get(src["job"].language, src["job"].language),
-                             source_json=json.dumps(source, ensure_ascii=False), scene_count=n, scene_budgets=budgets,
+                             source_json=json.dumps(source, ensure_ascii=False), scene_count=n, scene_budgets=budgets, next_word=NEXT_WORD[job.language],
                              notes_block=f"\nNotes from the operator: {job.operator_notes}\n" if job.operator_notes else "")
     log = {"prompt": prompt, "responses": []}
     log_path = ctx["dir"] / "_llm" / f"SCRIPT-{ctx['attempt']}.json"
@@ -221,7 +228,8 @@ async def stage_translate(ctx: dict) -> dict:
             meta.update(model=resp.model, tokens_in=resp.tokens_in, tokens_out=resp.tokens_out)
             meta["cost_usd"] += resp.cost_usd
             try:
-                script = ScriptOut.model_validate(extract_json(resp.text))
+                raw = extract_json(resp.text)
+                script = ScriptOut.model_validate(raw)
                 if len(script.scenes) != n:
                     raise ValueError(f"{len(script.scenes)} scenes, the source has {n}: one scene per source scene, same order")
                 break
@@ -231,6 +239,10 @@ async def stage_translate(ctx: dict) -> dict:
         else:
             raise SchemaError(f"translation JSON invalid after repair: {err[:300]}")
         script.sources = source["sources"]  # the facts were checked on the source; its sources stand
+        nxt = str(raw.get("next_subject") or "").strip().rstrip(".。!！ ")
+        last = script.scenes[-1]
+        if nxt and NEXT_WORD[job.language] not in last.narration:
+            last.narration = f"{last.narration.rstrip()} {NEXT_WORD[job.language]} {nxt}{'。' if job.language == 'ja' else '.'}"
         check_prompt = (f"Source script scenes ({LANG_NAMES.get(src['job'].language, src['job'].language)}):\n"
                         + json.dumps([sc["narration"] for sc in source["scenes"]], ensure_ascii=False)
                         + f"\n\nTranslation ({LANG_NAMES[job.language]}):\n" + json.dumps([sc.narration for sc in script.scenes], ensure_ascii=False)
@@ -250,6 +262,9 @@ async def stage_translate(ctx: dict) -> dict:
     out = finish_script(script, job, ctx["dir"], ctx["attempt"], rate)
     out["checks"].append({"rule": "translation_fidelity", "passed": not drifted, "expected": "every scene says what the source says",
                           "actual": "; ".join(drifted) or "no drift found", "message": "A second model pass compared each scene with the source."})
+    ends = NEXT_WORD[job.language] in script.scenes[-1].narration
+    out["checks"].append({"rule": "next_episode_line", "passed": ends or not job.operator_notes, "expected": f"ends on '{NEXT_WORD[job.language]} ...'",
+                          "actual": script.scenes[-1].narration[-60:], "message": "The last line names tomorrow's episode, the viewer's reason to subscribe."})
     out["source_job_id"] = job.source_job_id
     return out | {"_meta": meta}
 

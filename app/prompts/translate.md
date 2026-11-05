@@ -17,7 +17,7 @@ Rules:
 - hashtags: 4 to 6 tags viewers in {language_name} actually search for this topic, lowercase ASCII letters only, no diacritics, no spaces (for Japanese use romaji or English: #inu #neko #shorts). Keep #shorts last.
 - sources: copy from the source unchanged.
 - For Japanese only: put a space between phrases (文節) in narration and on_screen_text, for example "あなたの犬は 三つのことを 伝えています", because the captions appear phrase by phrase at those spaces.
-- When the source's last sentence announces tomorrow's episode ("Tomorrow: your cat." / "Mai: ..."), keep it as the last sentence in {language_name}. If the notes above name a next subject, end with that announcement instead; it is part of the last scene's budget and must not be dropped.
+- Never write a next-episode announcement ("Tomorrow: your cat." / "Mai: ...") in the narration. When the notes above name a next subject, or the source ends with such an announcement, put only that subject, in {language_name}, in "next_subject" (e.g. "tu gato", "deine Katze", "君の猫"); the app adds "{next_word} <next_subject>." after your last scene, and its time is already taken out of the last scene's budget. Otherwise next_subject is null.
 
 Return ONLY one JSON object, no prose and no code fences, with exactly this shape:
-{{"title": "...", "caption": "...", "hashtags": ["#..."], "scenes": [{{"narration": "...", "on_screen_text": "...", "visual_query": "..."}}], "sources": ["..."]}}
+{{"title": "...", "caption": "...", "hashtags": ["#..."], "scenes": [{{"narration": "...", "on_screen_text": "...", "visual_query": "..."}}], "sources": ["..."], "next_subject": "..."}}

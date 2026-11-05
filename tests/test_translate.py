@@ -78,6 +78,9 @@ def test_translation_reuses_clips_and_stops_at_script_review(tmp_path):
         fidelity = next(x for x in sc["checks"] if x["rule"] == "translation_fidelity")
         assert fidelity["passed"] is False and "scene 5" in fidelity["actual"]
         assert "Notes from the operator: Next: your cat" in llm.prompts[-2] and "8 scenes" in llm.prompts[-2]
+        # the next-episode line is added by code, once, from next_subject (the model dropped it in 4 of 5 real runs)
+        assert sc["scenes"][-1]["narration"].endswith("Cuéntalo en los comentarios. Mañana: tu gato.")
+        assert next(x for x in sc["checks"] if x["rule"] == "next_episode_line")["passed"] is True
 
         assert c.post(f"/jobs/{job_id}/script/approve", json={"approved_by": "founder"}).status_code == 200
         d = run_to_rest(c, job_id)
