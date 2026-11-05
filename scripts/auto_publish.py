@@ -229,8 +229,9 @@ def main() -> int:
             job = db.get(ContentJob, jid)
             export = s.storage_dir / "jobs" / jid / "export"
             m = json.loads((export / "manifest.json").read_text(encoding="utf-8"))
-            when = slot.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            row = Publication(job_id=jid, channel_id=job.channel_id, platform="youtube_shorts", url=None, published_at=when,
+            when = slot.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # n8n/YouTube publish_at format
+            row = Publication(job_id=jid, channel_id=job.channel_id, platform="youtube_shorts", url=None,
+                              published_at=slot.astimezone(timezone.utc).isoformat(timespec="milliseconds"),  # db.now()'s format
                               notes=f"{TAG}: uploading for {slot:%Y-%m-%d %H:%M} VN")
             db.add(row)
             db.commit()  # the placeholder is on disk before any byte leaves, so a crash can never cause a second upload

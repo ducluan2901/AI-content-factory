@@ -167,6 +167,9 @@ def test_patch_publication_backfills_channel_and_url(client):
     assert r.status_code == 200 and r.json()["channel_id"] == ch_id and r.json()["platform"] == "tiktok"
     assert client.get("/publications", params={"channel_id": ch_id}).json()[0]["url"].endswith("/video/1")
     assert client.patch("/publications/pub_missing", json={"url": "x"}).status_code == 404
+    # any offset is stored as UTC in db.now()'s format
+    assert client.patch(url, json={"published_at": "2026-11-04T19:30:00+07:00"}).json()["published_at"] == "2026-11-04T12:30:00.000+00:00"
+    assert client.patch(url, json={"published_at": "2026-11-04T12:30:00Z"}).json()["published_at"] == "2026-11-04T12:30:00.000+00:00"
 
 
 def test_patch_publication_keeps_affiliate_disclosure(client):

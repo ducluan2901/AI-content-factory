@@ -510,9 +510,8 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
             job = get_job(db, job_id)
             if job.status != "EXPORTED":
                 raise HTTPException(409, f"job is {job.status}; only an exported video can be recorded as published")
-            when = body.published_at or now()
             try:
-                analytics.parse_ts(when)
+                when = analytics.utc_iso(body.published_at or now())
             except ValueError:
                 raise HTTPException(422, "published_at must be an ISO-8601 timestamp")
             if body.affiliate_product_id:
@@ -544,7 +543,7 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
                 get_or_404(db, Channel, data["channel_id"])
             if "published_at" in data:
                 try:
-                    analytics.parse_ts(data["published_at"])
+                    data["published_at"] = analytics.utc_iso(data["published_at"])
                 except ValueError:
                     raise HTTPException(422, "published_at must be an ISO-8601 timestamp")
             if pub.affiliate_product_id and data.get("disclosure_confirmed") is False:

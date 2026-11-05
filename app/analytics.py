@@ -24,6 +24,11 @@ def parse_ts(ts: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def utc_iso(ts: str) -> str:
+    """Any ISO-8601 input stored in the one format db.now() writes, so string sorting and week cuts agree."""
+    return parse_ts(ts).astimezone(timezone.utc).isoformat(timespec="milliseconds")
+
+
 def engagement_rate(m: VideoMetric) -> float | None:
     return (m.likes + m.comments + m.shares) / m.views if m.views else None
 
