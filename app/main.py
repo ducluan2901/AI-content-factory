@@ -113,6 +113,14 @@ class PublicationIn(BaseModel):
     disclosure_confirmed: bool = False  # required when there is an affiliate link
 
 
+class PublicationPatch(BaseModel):
+    """Backfill of a post recorded without its channel or URL. Platform and job stay fixed: record a new post instead."""
+    channel_id: str | None = None
+    url: str | None = Field(default=None, max_length=1000)
+    published_at: str | None = None  # UTC ISO-8601
+    disclosure_confirmed: bool | None = None
+
+
 class ProductIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     seller: str | None = Field(default=None, max_length=200)
@@ -526,6 +534,25 @@ def create_app(settings: Settings | None = None, llm=None, tts=None, stock=None)
                 stmt = stmt.where(col == val)
         with sm() as db:
             return [pub_out(db, p) for p in db.scalars(stmt.order_by(Publication.published_at.desc()).limit(limit))]
+
+    @app.patch("/publications/{pub_id}")
+    def patch_publication(pub_id: str, body: PublicationPatch):
+        with sm() as db:
+            pub = get_or_404(db, Publication, pub_id)
+            data = required_or_422(body, ("channel_id", "published_at", "disclosure_confirmed"))
+            if "channel_id" in data:
+                get_or_404(db, Channel, data["channel_id"])
+            if "published_at" in data:
+                try:
+                    analytics.parse_ts(data["published_at"])
+                except ValueError:
+                    raise HTTPException(422, "published_at must be an ISO-8601 timestamp")
+            if pub.affiliate_product_id and data.get("disclosure_confirmed") is False:
+                raise HTTPException(422, "a post with an affiliate link must keep disclosure_confirmed=true")
+            for k, v in data.items():
+                setattr(pub, k, v)
+            db.commit()
+            return pub_out(db, pub)
 
     @app.put("/publications/{pub_id}/metrics/{milestone}")
     def put_metrics(pub_id: str, milestone: str, body: MetricIn):

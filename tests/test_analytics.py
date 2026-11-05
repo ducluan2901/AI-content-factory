@@ -151,6 +151,31 @@ def test_metrics_validate_and_a_second_entry_corrects_the_first(client):
     assert client.put("/publications/pub_missing/metrics/24h", json={"views": 1}).status_code == 404
 
 
+def test_patch_publication_backfills_channel_and_url(client):
+    pub = client.post(f"/jobs/{exported_job(client)}/publications", json={"platform": "tiktok"}).json()
+    assert pub["channel_id"] is None and pub["url"] is None
+    with client.app.state.sm() as db:
+        ch = Channel(name="VN", market="vn")
+        db.add(ch)
+        db.commit()
+        ch_id = ch.id
+    url = f"/publications/{pub['id']}"
+    assert client.patch(url, json={"channel_id": "ch_missing"}).status_code == 404
+    assert client.patch(url, json={"channel_id": None}).status_code == 422
+    assert client.patch(url, json={"published_at": "not a date"}).status_code == 422
+    r = client.patch(url, json={"channel_id": ch_id, "url": "https://tiktok.com/@ndl.tech/video/1"})
+    assert r.status_code == 200 and r.json()["channel_id"] == ch_id and r.json()["platform"] == "tiktok"
+    assert client.get("/publications", params={"channel_id": ch_id}).json()[0]["url"].endswith("/video/1")
+    assert client.patch("/publications/pub_missing", json={"url": "x"}).status_code == 404
+
+
+def test_patch_publication_keeps_affiliate_disclosure(client):
+    prod = client.post("/affiliate/products", json={"name": "P"}).json()["id"]
+    pub = client.post(f"/jobs/{exported_job(client)}/publications",
+                      json={"platform": "tiktok", "affiliate_product_id": prod, "disclosure_confirmed": True}).json()["id"]
+    assert client.patch(f"/publications/{pub}", json={"disclosure_confirmed": False}).status_code == 422
+
+
 def test_due_and_formats_endpoints(client):
     job_id = exported_job(client)
     long_ago = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
