@@ -122,7 +122,7 @@ def test_script_length_follows_the_voice_speaking_rate():
 
     rates = {p: speech_rate(Settings(_env_file=None, tts_provider=p), "vi") for p in ("fpt", "edge_tts", "elevenlabs")}
     assert rates["fpt"] > rates["edge_tts"] > rates["elevenlabs"] == 2.2  # a faster voice needs more words for the same length
-    assert speech_rate(Settings(_env_file=None, tts_provider="fpt"), "en") == 2.2
+    assert speech_rate(Settings(_env_file=None, tts_provider="fpt"), "en") == 2.8  # words/s: Edge Andrew read 42 words in 15.1 s
 
 
 def test_a_script_outside_the_length_window_is_rewritten_once_and_the_closer_draft_kept(tmp_path):

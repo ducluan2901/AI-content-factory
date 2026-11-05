@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import math
+import os
 import re
 import subprocess
 import time
@@ -73,7 +74,7 @@ class AnthropicApiProvider:
         try:
             resp = await self.client.with_options(timeout=timeout_s).beta.messages.create(
                 model=self.model,
-                max_tokens=16000,
+                max_tokens=20000,  # effort=high sometimes thinks past 16k; above ~21k the SDK demands streaming
                 messages=[{"role": "user", "content": prompt}],
                 output_config={"effort": self.effort},
                 # on a safety decline the API re-runs the request on a fallback model it picks
@@ -170,6 +171,8 @@ class EdgeTTS:
     async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
         import edge_tts
 
+        if not (voice or self.voices.get(language)):  # the global channels carry their own Edge voice in channel.voice_id
+            raise ProviderRejected(f"no Edge voice for language {language}: set the channel's voice_id")
         last: Exception | None = None
         # the endpoint intermittently returns NoAudioReceived for valid text; retry per call, not per stage
         for attempt in range(5):
@@ -341,6 +344,22 @@ class FixtureTTS:
         return TTSResult(out, [{"text": text, "start_ms": 0, "end_ms": int(dur * 1000)}])
 
 
+class LangRouterTTS:
+    """One provider per language: FPT voices Vietnamese only, so an English job (the global channel) goes to Edge.
+    `default` takes every other language (the translated global channels, each with its own Edge voice id)."""
+
+    def __init__(self, by_lang: dict, default=None):
+        self.by_lang, self.default = by_lang, default
+        self.name = "+".join(p.name for p in by_lang.values())
+        self.voices = {lang: p.voices[lang] for lang, p in by_lang.items()}
+
+    async def synthesize(self, text: str, language: str, out: Path, voice: str | None = None) -> TTSResult:
+        provider = self.by_lang.get(language, self.default)
+        if provider is None:
+            raise ProviderRejected(f"no TTS provider for language {language}")
+        return await provider.synthesize(text, language, out, voice)
+
+
 def build_llm(s: Settings):
     if s.llm_provider == "anthropic_api":
         if not s.anthropic_api_key:
@@ -361,6 +380,16 @@ class StockPhoto:
     author: str
     author_url: str | None = None
     duration_s: float | None = None  # stock video clips only
+
+
+def save_atomic(path: Path, data: bytes) -> None:
+    """Write a cache file whole or not at all: another process sharing storage/stock_cache must never read half a clip."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.part")
+    tmp.write_bytes(data)
+    try:
+        os.replace(tmp, path)
+    except PermissionError:  # Windows: the other process already wrote it and has it open; its copy is complete
+        tmp.unlink(missing_ok=True)
 
 
 class PexelsProvider:
@@ -394,7 +423,7 @@ class PexelsProvider:
             if not cached.is_file():
                 img = await self.client.get(url, follow_redirects=True)
                 img.raise_for_status()
-                cached.write_bytes(img.content)
+                save_atomic(cached, img.content)
             return StockPhoto(cached, str(photo["id"]), photo["url"], photo.get("photographer") or "Pexels contributor", photo.get("photographer_url"))
         except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
             log.warning("pexels search failed for %r", query, exc_info=True)
@@ -408,9 +437,10 @@ class ClipCheck:
 
     MODEL = "claude-haiku-5-5"
 
-    def __init__(self, api_key: str | None = None, client=None):
+    def __init__(self, api_key: str | None = None, client=None, model: str = MODEL):
         import anthropic
 
+        self.model = model
         self.client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=2)
         self.cost_usd = 0.0  # running total, read by the visuals stage
 
@@ -436,9 +466,9 @@ class ClipCheck:
             "unless the description asks for it, and not a different animal or object. Order the kept frames best first. "
             'Answer with JSON only: {"keep": [frame numbers]}')})
         try:
-            resp = await self.client.beta.messages.create(model=self.MODEL, max_tokens=300, thinking={"type": "disabled"},
+            resp = await self.client.beta.messages.create(model=self.model, max_tokens=300,  # no thinking arg: Claude 5 rejects {"type": "disabled"} (400), and the error was swallowed, so every clip passed
                                                           output_config={"effort": "low"}, messages=[{"role": "user", "content": content}])
-            p_in, p_out = PRICES.get(resp.model, PRICES[self.MODEL])
+            p_in, p_out = PRICES.get(resp.model, PRICES[self.model])
             self.cost_usd += (resp.usage.input_tokens * p_in + resp.usage.output_tokens * p_out) / 1e6
             keep = extract_json("".join(b.text for b in resp.content if b.type == "text")).get("keep", [])
             return list(dict.fromkeys(i for i in keep if isinstance(i, int) and 0 <= i < len(frames)))
@@ -532,7 +562,7 @@ class PixabayProvider:
                 if not cached.is_file():
                     clip = await self.client.get(h["videos"]["medium"]["url"], follow_redirects=True)
                     clip.raise_for_status()
-                    cached.write_bytes(clip.content)
+                    save_atomic(cached, clip.content)
                 self.used.add(str(h["id"]))
                 out.append(StockPhoto(cached, str(h["id"]), h["pageURL"], h.get("user") or "Pixabay contributor", duration_s=float(h["duration"])))
                 if len(out) == n:
@@ -564,7 +594,7 @@ class PixabayProvider:
             if not cached.is_file():
                 img = await self.client.get(url, follow_redirects=True)
                 img.raise_for_status()
-                cached.write_bytes(img.content)
+                save_atomic(cached, img.content)
             return StockPhoto(cached, str(hit["id"]), hit["pageURL"], hit.get("user") or "Pixabay contributor")
         except Exception:  # noqa: BLE001 - missing stock is a graceful degrade, never a stage failure
             log.warning("pixabay search failed for %r", query, exc_info=True)
@@ -655,7 +685,7 @@ def build_stock(s: Settings):
             log.warning("STOCK_PROVIDER=pixabay but PIXABAY_API_KEY is empty; every scene will fall back to a title card")
             return None
         key = s.anthropic_api_key.get_secret_value() if s.anthropic_api_key else None
-        check = ClipCheck(key) if s.clip_check and key else None
+        check = ClipCheck(key, model=s.clip_check_model) if s.clip_check and key else None
         return PixabayProvider(s.pixabay_api_key.get_secret_value(), s.storage_dir / "stock_cache", check=check)
     if s.stock_provider == "pexels":
         if not (s.pexels_api_key and s.pexels_api_key.get_secret_value()):
@@ -673,7 +703,8 @@ def build_tts(s: Settings):
     if s.tts_provider == "fpt":
         if not (s.fpt_ai_api_key and s.fpt_ai_api_key.get_secret_value()):
             raise ValueError("TTS_PROVIDER=fpt needs FPT_AI_API_KEY in .env")
-        return FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path)
+        edge = EdgeTTS({"en": s.tts_voice_en}, s.tts_rate)
+        return LangRouterTTS({"vi": FptTTS(s.fpt_ai_api_key.get_secret_value(), s.fpt_voice, s.fpt_speed, s.ffmpeg_path, s.ffprobe_path), "en": edge}, default=edge)
     if s.tts_provider == "elevenlabs":
         if not (s.elevenlabs_api_key and s.elevenlabs_api_key.get_secret_value() and s.elevenlabs_voice_id):
             raise ValueError("TTS_PROVIDER=elevenlabs needs ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID in .env")

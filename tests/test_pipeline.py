@@ -64,6 +64,8 @@ def test_happy_path_requires_approval_then_exports(tmp_path):
         assert {"video.mp4", "upload.mp4", "vi.srt", "caption.txt", "manifest.json", "thumbnail.jpg"} <= set(ok.json()["export"]["files"])
         manifest = json.loads((tmp_path / "jobs" / job_id / "export" / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["approval"]["approved_by"] == "founder" and manifest["ai_generated"] is True
+        caption = (tmp_path / "jobs" / job_id / "export" / "caption.txt").read_text(encoding="utf-8")
+        assert "--- pinned comment ---\n" in caption and caption.rstrip().endswith("Previous episode: <paste link>")
         assert c.post(f"/jobs/{job_id}/approve", json={"approved_by": "x"}).status_code == 409  # cannot approve twice
 
 

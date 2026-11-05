@@ -101,6 +101,26 @@ def render_photo_card(photo_path: Path, text: str, index: int, font_path: str, o
     img.save(out)
 
 
+BRAND_CARD_S = 2.0  # the closing card holds this long after the voice ends
+
+
+def render_brand_card(name: str, logo_path: Path | None, font_path: str, out: Path) -> None:
+    """Closing card for a client video: the logo (fit into a 560 px square) above the business name, centred."""
+    top, bottom = PALETTES[3]
+    img = Image.composite(Image.new("RGB", (W, H), bottom), Image.new("RGB", (W, H), top), Image.linear_gradient("L").resize((W, H)))
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.truetype(font_path, 96)
+    while draw.textlength(name, font=font) > W - 2 * SAFE_X and font.size > 48:
+        font = ImageFont.truetype(font_path, font.size - 6)
+    y = H // 2 - 60
+    if logo_path:
+        logo = Image.open(logo_path).convert("RGBA")
+        logo.thumbnail((560, 560))
+        img.paste(logo, ((W - logo.width) // 2, y - 40 - logo.height), logo)
+    draw.text(((W - draw.textlength(name, font=font)) // 2, y), name, font=font, fill=(255, 255, 255), stroke_width=4, stroke_fill=(0, 0, 0))
+    img.save(out)
+
+
 def concat_audio(ffmpeg: str, parts: list[Path], out: Path) -> None:
     args = [ffmpeg, "-y", "-v", "error"]
     for p in parts:
@@ -142,7 +162,7 @@ def subtitle_filter(srt: Path, font_path: str, workdir: Path) -> str:
 
 def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: Path, out: Path,
                  srt: Path | None = None, font_path: str | None = None, music: Path | None = None,
-                 offsets: list[float] | None = None, whoosh_at: list[float] | None = None) -> list[str]:
+                 offsets: list[float] | None = None, whoosh_at: list[float] | None = None, tail_s: float = 0.0) -> list[str]:
     """Each still lands with a punch zoom and then drifts in slowly, before concatenation. An .mp4 in `cards` is a
     stock clip instead: it plays from its offset (seconds), cropped to fill 9:16, held on its last frame if too short.
     Each still is a single-frame input and zoompan's d= turns that one frame into exactly d output frames, which
@@ -150,7 +170,8 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
     scene 1's card for its whole length while a duration-only test passed.)
     With srt and font_path the subtitles are burned into the picture (a platform-independent hard caption).
     With music, the track loops under the voice at MUSIC_GAIN_DB and fades out over the last two seconds.
-    whoosh_at: seconds where a whoosh peaks (the start of each new fact)."""
+    whoosh_at: seconds where a whoosh peaks (the start of each new fact).
+    tail_s: silence appended to the voice so a closing card (the last of `cards`) outlives it; -shortest cuts there."""
     # burn-in runs ffmpeg with another cwd, so every path must be absolute (STORAGE_DIR defaults to ./storage)
     cards, audio, out = [c.resolve() for c in cards], audio.resolve(), out.resolve()
     srt = srt.resolve() if srt else None
@@ -177,6 +198,9 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
     burn = f",{subtitle_filter(srt, font_path, out.parent)}" if srt else ""
     parts.append(f"{labels}concat=n={n}:v=1:a=0{burn},format=yuv420p[v]")
     amap, mix = f"{n}:a", [f"[{n}:a]"]
+    if tail_s > 0:
+        parts.append(f"[{n}:a]apad=pad_dur={tail_s:.2f}[voice]")
+        amap, mix = "[voice]", ["[voice]"]
     if music:
         cmd += ["-stream_loop", "-1", "-i", str(music.resolve())]
         fade_at = max(sum(durations) - 2, 0)
@@ -190,8 +214,9 @@ def render_video(ffmpeg: str, cards: list[Path], durations: list[float], audio: 
         for j, t in enumerate(whoosh_at):
             parts.append(f"[w{j}]adelay={round(max(0.0, t - WHOOSH_S * 0.6) * 1000)}:all=1[wd{j}]")
             mix.append(f"[wd{j}]")
-    if len(mix) > 1:
-        parts.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:normalize=0[a]")
+    if len(mix) > 1:  # music and whooshes add peaks on top of the limited voice: limit the sum again before AAC
+        parts.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:normalize=0,aresample=192000,"
+                     f"alimiter=limit={LIMITER_CEILING}:attack=5:release=50:level=disabled,aresample=48000[a]")
         amap = "[a]"
     cmd += [
         "-filter_complex", ";".join(parts),
@@ -240,30 +265,60 @@ def build_cues(segments: list[dict], max_line: int = 32) -> list[dict]:
 LOUDNORM_TARGET_LUFS = -14.0  # BACKLOG 3.3: the voice-over target
 
 
-def normalize_loudness(ffmpeg: str, in_path: Path, out_path: Path) -> float | None:
-    """Single-pass EBU R128 loudness normalisation (shortcut: single-pass, not measure-then-apply two-pass,
-    so the reported figure is an estimate, not an exact measurement; upgrade to two-pass if review shows drift).
-    Returns the achieved integrated loudness in LUFS, or None if it could not be measured (true digital silence
-    reports -inf, which is not a real measurement and is not JSON-serialisable, so it becomes None here too).
-    """
-    cmd = [ffmpeg, "-y", "-hide_banner", "-nostats", "-i", str(in_path),
-           "-af", f"loudnorm=I={LOUDNORM_TARGET_LUFS}:TP=-1.5:LRA=11:print_format=json",
-           "-ar", "48000", str(out_path)]
+LOUDNESS_TOLERANCE_LU = 0.2
+LIMITER_CEILING = 0.835  # about -1.5 dBFS, checked at 4x oversampling so true peaks stay near -1.5 dBTP
+
+
+def _run_ffmpeg(cmd: list[str], what: str) -> str:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except FileNotFoundError as e:
         raise MediaError(f"executable not found: {cmd[0]} (set FFMPEG_PATH)") from e
     if proc.returncode != 0:
-        raise MediaError(f"ffmpeg loudnorm failed ({proc.returncode}): {proc.stderr[-800:]}")
-    m = re.search(r"\{[^{}]*\}", proc.stderr)
-    if not m:
+        raise MediaError(f"ffmpeg {what} failed ({proc.returncode}): {proc.stderr[-800:]}")
+    return proc.stderr
+
+
+def decode_errors(ffmpeg: str, path: Path) -> int:
+    """Lines FFmpeg prints when decoding the whole file: 0 for a clean video. The probe only reads headers, so a file
+    built from a half-downloaded clip has the right codecs and length and still shows broken frames."""
+    err = _run_ffmpeg([ffmpeg, "-hide_banner", "-nostats", "-v", "error", "-i", str(path), "-f", "null", "-"], "decode check")
+    return len([x for x in err.splitlines() if x.strip()])
+
+
+def measure_loudness(ffmpeg: str, path: Path) -> float | None:
+    """Integrated loudness in LUFS, or None for silence (-inf is not a real measurement and not JSON-serialisable)."""
+    err = _run_ffmpeg([ffmpeg, "-hide_banner", "-nostats", "-i", str(path),
+                       "-af", f"loudnorm=I={LOUDNORM_TARGET_LUFS}:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"], "loudness measure")
+    found = re.findall(r"\{[^{}]*\}", err)
+    if not found:
         return None
-    data = json.loads(m.group(0))
     try:
-        value = float(data.get("output_i"))
+        value = float(json.loads(found[-1]).get("input_i"))
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
+
+
+def normalize_loudness(ffmpeg: str, in_path: Path, out_path: Path) -> float | None:
+    """Bring the voice-over to LOUDNORM_TARGET_LUFS: measure, apply gain, limit peaks, measure again and correct.
+    loudnorm alone undershot by about 2 LU on real voice-overs because its true-peak limiter pulled the level down.
+    Returns the measured loudness of the output, or None when the input is silent (written through unchanged).
+    """
+    current = measure_loudness(ffmpeg, in_path)
+    if current is None:
+        _run_ffmpeg([ffmpeg, "-y", "-hide_banner", "-nostats", "-i", str(in_path), "-ar", "48000", str(out_path)], "audio copy")
+        return None
+    gain, achieved = LOUDNORM_TARGET_LUFS - current, None
+    for _ in range(4):  # the limiter eats part of the gain, so a few corrections are needed (3-4 on the Nov 2026 samples)
+        _run_ffmpeg([ffmpeg, "-y", "-hide_banner", "-nostats", "-i", str(in_path),
+                     "-af", f"volume={gain:.2f}dB,aresample=192000,alimiter=limit={LIMITER_CEILING}:attack=5:release=50:level=disabled,aresample=48000",
+                     str(out_path)], "loudness normalise")
+        achieved = measure_loudness(ffmpeg, out_path)
+        if achieved is None or abs(achieved - LOUDNORM_TARGET_LUFS) <= LOUDNESS_TOLERANCE_LU:
+            break
+        gain += 1.3 * (LOUDNORM_TARGET_LUFS - achieved)
+    return achieved
 
 
 def write_subtitles(cues: list[dict], srt: Path, vtt: Path) -> None:

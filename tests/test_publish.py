@@ -14,7 +14,7 @@ M = {"title": "3 điều con chó nhà bạn đang nói với bạn, số 3 nằ
 
 
 def test_each_platform_gets_its_own_tags_and_the_sources():
-    assert publish.tiktok_caption(M) == "Chó nhà bạn hay xin gì? #suthatthuvi #khamphathegioi #learnontiktok #cho #viral"
+    assert publish.tiktok_caption(M) == "Sự thật thú vị về chó – chó nhà bạn\nChó nhà bạn hay xin gì? #suthatthuvi #khamphathegioi #learnontiktok #cho #viral"
     assert publish.youtube_description(M) == ("Chó nhà bạn hay xin gì?\n\nNguồn:\nSố 1: American Kennel Club\nSố 2: National Geographic"
                                              "\n\n#suthatthuvi #khamphathegioi #shorts #cho #viral")
     assert publish.facebook_description(M).endswith("#suthatthuvi #khamphathegioi #reels #cho #viral")
@@ -39,3 +39,23 @@ def test_only_exported_jobs_are_posted_and_each_platform_once(tmp_path):
         assert todo == {("j_ok", "youtube_shorts"), ("j_ok", "facebook_reels"),
                         ("j_two", "tiktok"), ("j_two", "youtube_shorts"), ("j_two", "facebook_reels")}  # never the unapproved one
         assert {(j.id, p) for j, p in publish.pending(db, ["tiktok"], ["j_ok", "j_two"])} == {("j_two", "tiktok")}
+
+
+def test_youtube_title_names_the_series_only_for_series_topics():
+    series = publish.youtube_title({"title": "x" * 120, "topic": "Tai chó. Series Thú cưng nhà bạn đang giấu gì. Mai: lưỡi mèo"})
+    assert series.endswith(" | Thú cưng nhà bạn #Shorts") and len(series) <= 100
+    assert publish.youtube_title({"title": "Mắt bạn", "topic": "mắt"}) == "Mắt bạn #Shorts"
+    assert publish.youtube_title({"title": "Ngón áp út", "topic": "Thử ngay. Series Cơ thể bạn – thử ngay. Mai: cuộn lưỡi"}) == "Ngón áp út | Cơ thể bạn #Shorts"
+
+
+def test_long_video_chapter_names_come_from_the_title():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("compile_long", Path(__file__).parent.parent / "scripts" / "compile_long.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    assert m.chapter_name("Mũi chó nhà bạn làm được 3 việc: vân mũi riêng") == "Mũi chó nhà bạn làm được 3 việc"
+    assert m.chapter_name("Lúc bạn đi vắng, chó nhà bạn làm 3 việc. Việc thứ 3 lạ nhất") == "Lúc bạn đi vắng, chó nhà bạn làm 3 việc"
+
+
+def test_tiktok_caption_has_no_search_line_for_unknown_subjects():
+    assert publish.tiktok_caption({"caption": "Cá voi hát.", "hashtags": ["#cavoi", "#viral"]}) == "Cá voi hát. #cavoi #viral"

@@ -60,6 +60,17 @@ Run the API and the operator console in two terminals:
 API docs at <http://127.0.0.1:8000/docs>, operator console at <http://127.0.0.1:8501>. Both
 bind to localhost only, because the MVP has no authentication.
 
+On this machine the API also starts by itself at logon: the Windows scheduled task
+`AIContentFactoryAPI` (Task Scheduler, user DSI, no time limit, restarts up to 3 times) runs
+`run_api.ps1` in a minimised window. After changing code, restart it:
+
+```bash
+.\scripts\restart_api.ps1
+```
+
+It refuses while a job is QUEUED or RUNNING, because a restart kills the job mid-stage (`-Force`
+overrides). There is no `--reload`, on purpose: a file save would do the same.
+
 To try the pipeline without an API key, set `LLM_PROVIDER=fixture` in `.env`. It replays a
 recorded Vietnamese script from `tests/fixtures/llm/` and still uses the real voice and render.
 

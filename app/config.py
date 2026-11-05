@@ -32,11 +32,15 @@ class Settings(BaseSettings):
     pexels_api_key: SecretStr | None = None
     pixabay_api_key: SecretStr | None = None  # free at pixabay.com/api/docs after sign-up
     youtube_channel_id: str = ""  # scripts/publish.py refuses to post to any other YouTube channel when set
-    clip_check: bool = True  # Claude Haiku looks at stock clip frames and drops off-topic ones (~$0.0002 a search)
+    clip_check: bool = True  # Claude looks at stock clip frames and drops off-topic ones (Haiku ~$0.0002 a search)
+    clip_check_model: str = "claude-haiku-5-5"  # claude-sonnet-5-5 sees the subject better at ~20x the price, still under $0.01 a video
+    qa_review: bool = True  # app/qa_review.py: Claude checks one frame per scene and the facts before a human reviews (~$0.02-0.04)
+    qa_review_model: str = "claude-sonnet-5-5"
     music_dir: Path = Path("./assets/music")  # background tracks (mp3/wav/m4a/ogg) you have the right to use; empty = no music
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     font_path: str = r"C:\Windows\Fonts\segoeuib.ttf"
+    font_path_ja: str = r"C:\Windows\Fonts\YuGothB.ttc"  # Japanese captions: Segoe has no kana or kanji (Yu Gothic ships with Windows 10/11)
     database_url: str = "sqlite:///./storage/factory.db"
     storage_dir: Path = Path("./storage")
     fixture_dir: Path = ROOT / "tests" / "fixtures"

@@ -135,6 +135,12 @@ class ContentJob(Base):
     burn_subtitles: Mapped[bool] = mapped_column(default=False)  # hard-code the subtitles into the picture at render
     script_approved_at: Mapped[str | None]
     operator_notes: Mapped[str | None]  # feedback fed into the next script generation
+    # client videos: a closing card with the business name (and its logo file, if any) after the last scene
+    brand_name: Mapped[str | None]
+    brand_logo_path: Mapped[str | None]
+    visual_queries_json: Mapped[str | None]  # {"<scene_index>": "stock search terms"}: operator overrides for a VISUALS re-run
+    # translation of an approved job (the global channels): its script is translated and its clips reused, scene for scene
+    source_job_id: Mapped[str | None]
     # shortcut: plain text, not an FK, to avoid the job<->approval FK cycle SQLite cannot create; add when moving to Postgres
     approval_id: Mapped[str | None]
     error_summary: Mapped[str | None]
