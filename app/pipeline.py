@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import media
+from app import media, qa_review
 from app.config import ROOT, Settings
 from app.db import Approval, Channel, ContentJob, StageRun, latest_ok_run, now
 from app.planner import FORMATS
@@ -391,12 +391,23 @@ async def stage_quality(ctx: dict) -> dict:
               "Claims are not source-checked in this version: open the listed sources and verify the facts before approving."),
     ]
     blocking = [c for c in checks if c["severity"] == "error" and not c["passed"]]
-    return {"checks": checks, "passed": not blocking, "_meta": {"provider": "quality_gate"}}
+    return {"checks": checks, "passed": not blocking, "_meta": {"provider": "quality_gate", "cost_usd": round(cost, 6)}}
 
 
 # (name, fn, max_attempts)
 STAGES = [
     ("SCRIPT", stage_script, 2),
+    s, cost = ctx["settings"], 0.0
+    if s.qa_review and s.llm_provider != "fixture" and s.anthropic_api_key:
+        import anthropic
+
+        try:
+            frames = await asyncio.to_thread(qa_review.scene_frames, s.ffmpeg_path, str(s.storage_dir / r["video_path"]), vo["scenes"])
+            client = anthropic.AsyncAnthropic(api_key=s.anthropic_api_key.get_secret_value(), max_retries=2)
+            data, cost = await qa_review.review(client, s.qa_review_model, sc["scenes"], sc.get("sources", []), frames)
+        except Exception:  # noqa: BLE001 - advisory: a broken frame grab must not fail a finished render
+            data = None
+        checks.append(qa_review.as_check(data))
     ("VOICE", stage_voice, 3),
     ("VISUALS", stage_visuals, 1),
     ("SUBTITLES", stage_subtitles, 1),
