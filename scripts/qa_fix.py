@@ -27,7 +27,7 @@ from app import qa_review  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.db import ContentJob, StageRun, latest_ok_run, make_sessionmaker  # noqa: E402
 from app.pipeline import STAGE_NAMES, rel, supersede_from  # noqa: E402
-from app.providers import build_stock  # noqa: E402
+from app.providers import StockPhoto, build_stock, save_atomic  # noqa: E402
 
 API = "http://127.0.0.1:8000"
 OVERUSED = {"131824"}  # chow by a waterfall: Pixabay returns it for half the dog queries; viewers see it in every video
@@ -46,6 +46,21 @@ def swap_scene(assets: list[dict], scene_index: int, clips: list, stock, s) -> l
                         "licence": stock.licence, "licence_url": stock.licence_url, "attribution_text": stock.attribution(clip),
                         "path": rel(s, clip.path), "clip_offset_s": round(min(0.5 + k // len(clips) * step_s, max(0.0, (clip.duration_s or 0) - step_s)), 2)})
         k += 1
+    return out
+
+
+async def pixabay_ids(s: Settings, ids: list[str]) -> list:
+    """Download the named Pixabay videos into the shared stock cache (same file names the provider uses)."""
+    key, cache, out = s.pixabay_api_key.get_secret_value(), s.storage_dir / "stock_cache", []
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+        for vid in (x.strip() for x in ids if x.strip()):
+            hits = (await c.get("https://pixabay.com/api/videos/", params={"key": key, "id": vid})).json().get("hits") or []
+            if not hits:
+                continue
+            h, path = hits[0], cache / f"pixabay-v{vid}.mp4"
+            if not path.is_file():
+                save_atomic(path, (await c.get(h["videos"]["medium"]["url"])).content)
+            out.append(StockPhoto(path, str(h["id"]), h["pageURL"], h.get("user") or "Pixabay contributor", duration_s=float(h["duration"])))
     return out
 
 
@@ -97,7 +112,9 @@ async def fix(job_id: str, s: Settings, sm, client, dry: bool, manual: list[dict
             continue
         sc = out["SCRIPT"]["scenes"][i]
         clips, query = [], ""
-        for query in dict.fromkeys(q for q in (f["query"], sc.get("visual_query") or sc["on_screen_text"]) if q):  # reviewer's query, then the writer's
+        if f["query"].startswith("ids:"):  # Pixabay clips a person picked by eye: no search, no ranking
+            query, clips = f["query"], await pixabay_ids(s, f["query"][4:].split(","))
+        for query in [] if clips else dict.fromkeys(q for q in (f["query"], sc.get("visual_query") or sc["on_screen_text"]) if q):  # reviewer's query, then the writer's
             if clips := await stock.search_videos(query):
                 break
         if clips:
@@ -142,7 +159,7 @@ async def main() -> int:
     ap.add_argument("--job", action="append", required=True)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--scene", type=int, action="append", help="fix this scene (1-based) without the QA reviewer; pair with --query")
-    ap.add_argument("--query", action="append", help="English stock search for the matching --scene")
+    ap.add_argument("--query", action="append", help="English stock search for the matching --scene, or ids:123,456 for Pixabay clips picked by eye")
     args = ap.parse_args()
     if (args.scene or args.query) and (len(args.job) != 1 or len(args.scene or []) != len(args.query or [])):
         ap.error("--scene/--query come in pairs and need exactly one --job")
