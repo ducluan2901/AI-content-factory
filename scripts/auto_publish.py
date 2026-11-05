@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import select  # noqa: E402
 
 from app.config import ROOT, Settings  # noqa: E402
-from app.db import Channel, ContentJob, Publication, make_sessionmaker, now  # noqa: E402
+from app.db import Channel, ContentJob, Publication, latest_ok_run, make_sessionmaker  # noqa: E402
 from scripts.publish import facebook_description, tiktok_caption, youtube_description, youtube_title  # noqa: E402
 
 VN = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -65,9 +65,10 @@ def quota_day_start(at: datetime) -> datetime:
     return p.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def promises_next(topic: str) -> bool:
-    """The narration ends by naming tomorrow's video, so that video must exist before this one goes out."""
-    return bool(re.search(r"\bMai:|Phần 1\b", topic or ""))
+def promises_next(narration: str) -> bool:
+    """The spoken ending names tomorrow's video, so that video must exist before this one goes out. Judged on what is
+    said, not the topic note: a topic "Mai: (để trống)" produced no teaser."""
+    return bool(re.search(r"\bMai:|Phần 2 mai lên", narration or "", re.I))
 
 
 def plan(queue, jobs: dict, published: set, used_today: int, at: datetime) -> tuple[list, list]:
@@ -204,7 +205,9 @@ def main() -> int:
             if status == "EXPORTED":  # ready checks run here, before planning, so a teaser is never sent while its follow-up cannot go
                 hooks[j.id] = webhook_for(db, j, default)
                 status = ready_problem(s.storage_dir / "jobs" / j.id) or ("no n8n webhook for this channel" if not hooks[j.id] else "EXPORTED")
-            jobs[j.id] = (status, j.input_topic, j.channel_id)
+            script = latest_ok_run(db, j.id, "SCRIPT")
+            ending = json.loads(script.output_json)["scenes"][-1]["narration"] if script else j.input_topic
+            jobs[j.id] = (status, ending, j.channel_id)
         pubs = list(db.scalars(select(Publication).where(Publication.platform == "youtube_shorts")))
         published = {p.job_id for p in pubs}
         for p in pubs:

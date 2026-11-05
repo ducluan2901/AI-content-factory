@@ -37,7 +37,7 @@ def test_plan_sends_in_slot_order_within_quota_and_holds_the_rest():
 
 def test_plan_holds_a_teaser_until_tomorrows_video_is_approved():
     q = [(slot(9, "19:30"), "p1"), (slot(10, "19:30"), "p2"), (slot(9, "11:30"), "m")]
-    jobs = {"p1": ("EXPORTED", "Phần 1. Mèo ngủ", "vi"), "p2": ("AWAITING_APPROVAL", "Phần 2", "vi"), "m": ("EXPORTED", "Tai chó. Mai: lưỡi mèo", "vi")}
+    jobs = {"p1": ("EXPORTED", "Mèo nhà bạn ngủ kiểu nào? Phần 2 mai lên, theo dõi để không lỡ.", "vi"), "p2": ("AWAITING_APPROVAL", "Phần 2", "vi"), "m": ("EXPORTED", "Chó nhà bạn có làm vậy không? Mai: lưỡi mèo.", "vi")}
     send, held = plan(sorted(q), jobs, set(), 0, AT)
     assert send == [] and {j for _, j, _ in held} == {"p1", "p2", "m"}
     jobs["p2"] = ("EXPORTED", "Phần 2", "vi")
