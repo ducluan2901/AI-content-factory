@@ -50,6 +50,21 @@ def speech_rate(s: Settings, language: str) -> float:
 # the next-episode line a translated video ends on ("Mañana: tu gato."), the one reason a Short gives to subscribe
 NEXT_WORD = {"vi": "Mai:", "en": "Tomorrow:", "es": "Mañana:", "pt": "Amanhã:", "de": "Morgen:", "fr": "Demain :", "ja": "次は"}
 NEXT_RESERVE = {"words": 3, "characters": 7}  # what that line takes out of the last scene's budget
+MAX_TEMPO = 1.2  # a translated voice-over that runs long is sped up at most this much (still natural for Shorts narration)
+
+
+def last_json(text: str) -> dict:
+    """The last parseable JSON object in a reply: a model that corrects itself mid-answer prints two, and extract_json's
+    outermost match then spans both and fails."""
+    dec, i, out = json.JSONDecoder(), 0, None
+    while (i := text.find("{", i)) != -1:
+        try:
+            out, i = dec.raw_decode(text, i)
+        except ValueError:
+            i += 1
+    if not isinstance(out, dict):
+        raise ValueError("no JSON object in LLM response")
+    return out
 
 
 def spoken_units(text: str, language: str) -> int:
@@ -213,8 +228,11 @@ async def stage_translate(ctx: dict) -> dict:
     unit = "characters" if job.language == "ja" else "words"
     # the "Tomorrow: X." line is added by code (models drop it when the budget is tight), so its length comes off the last scene
     reserve = {i: NEXT_RESERVE[unit] if i == n - 1 else 0 for i in range(n)}
-    budgets = "\n".join(f"- scene {i + 1}: about {max(3, round((spans[i][1] - spans[i][0]) / 1000 * rate) - reserve[i])} {unit} ({(spans[i][1] - spans[i][0]) / 1000:.1f} s of clips)"
-                        for i in range(n) if i in spans)
+    budget = {i: max(3, round((spans[i][1] - spans[i][0]) / 1000 * rate) - reserve[i]) for i in spans}
+    budgets = "\n".join(f"- scene {i + 1}: about {budget[i]} {unit} ({(spans[i][1] - spans[i][0]) / 1000:.1f} s of clips)" for i in range(n) if i in spans)
+
+    def overrun(sc: ScriptOut) -> int:  # units over budget, summed over the scenes that run long
+        return sum(max(0, spoken_units(x.narration, job.language) - round(budget[i] * 1.1)) for i, x in enumerate(sc.scenes) if i in budget)
     prompt = template.format(language_name=LANG_NAMES[job.language], source_language_name=LANG_NAMES.get(src["job"].language, src["job"].language),
                              source_json=json.dumps(source, ensure_ascii=False), scene_count=n, scene_budgets=budgets, next_word=NEXT_WORD[job.language],
                              notes_block=f"\nNotes from the operator: {job.operator_notes}\n" if job.operator_notes else "")
@@ -238,6 +256,26 @@ async def stage_translate(ctx: dict) -> dict:
                 prompt = f"{prompt}\n\nYour previous answer was invalid:\n{err}\n\nPrevious answer:\n{resp.text[:4000]}\n\nReturn the corrected JSON object only."
         else:
             raise SchemaError(f"translation JSON invalid after repair: {err[:300]}")
+        if overrun(script):
+            # Sonnet wrote German at the source's length (17 words for a 9-word scene) and ignored "Too long" when it came
+            # with the whole prompt again; a short, separate task (these sentences, this many words) is what it follows
+            long = {i: x.narration for i, x in enumerate(script.scenes) if i in budget and spoken_units(x.narration, job.language) > round(budget[i] * 1.1)}
+            ask = "\n".join(f'{i + 1}. at most {budget[i]} {unit}: "{t}"' for i, t in long.items())
+            resp = await ctx["llm"].complete(
+                f"Shorten each {LANG_NAMES[job.language]} line below to at most the given number of {unit}, for a voice-over that must fit "
+                f"its video clip. Keep every fact and number, the question and any '{NEXT_WORD[job.language]}' or 'number three' promise; "
+                f"cut adjectives, repetition and asides. Spoken, natural {LANG_NAMES[job.language]}.\n\n{ask}\n\n"
+                'Return ONLY JSON: {"lines": {"<number>": "<shortened line>"}}', timeout_s=s.stage_timeout_s)
+            log["responses"].append(resp.text)
+            meta["cost_usd"] += resp.cost_usd
+            try:
+                lines = last_json(resp.text)["lines"]
+                for i in long:
+                    short = str(lines.get(str(i + 1)) or "").strip()
+                    if short and spoken_units(short, job.language) < spoken_units(script.scenes[i].narration, job.language):
+                        script.scenes[i].narration = short
+            except (ValueError, KeyError, TypeError, AttributeError):
+                pass  # the first draft stands; the script checks show its length
         script.sources = source["sources"]  # the facts were checked on the source; its sources stand
         nxt = str(raw.get("next_subject") or "").strip().rstrip(".。!！ ")
         last = script.scenes[-1]
@@ -254,7 +292,7 @@ async def stage_translate(ctx: dict) -> dict:
         log["responses"].append(resp.text)
         meta["cost_usd"] += resp.cost_usd
         try:
-            drifted = [f"scene {d['scene']}: {d['why']}" for d in extract_json(resp.text).get("drifted", [])]
+            drifted = [f"scene {d['scene']}: {d['why']}" for d in last_json(resp.text).get("drifted", [])]
         except (ValueError, KeyError, TypeError, AttributeError):
             drifted = ["back-check unreadable: compare the scenes yourself"]
     finally:
@@ -357,11 +395,21 @@ async def stage_voice(ctx: dict) -> dict:
         t += dur_ms
     raw_audio = d / "vo_raw.wav"
     await asyncio.to_thread(media.concat_audio, s.ffmpeg_path, parts, raw_audio)
+    # a translation that still runs long (models miscount words; German and French overshot their budgets by a third) is
+    # read faster instead of failing the length gate: atempo keeps the pitch, every timing shrinks by the same factor
+    tempo = min(MAX_TEMPO, t / 1000 / (duration_window(job)[1] - 0.5)) if job.source_job_id else 1.0
+    if tempo > 1.0:
+        fast = d / "vo_fast.wav"
+        await asyncio.to_thread(media.run, [s.ffmpeg_path, "-y", "-v", "error", "-i", str(raw_audio), "-filter:a", f"atempo={tempo:.4f}", str(fast)])
+        raw_audio, t = fast, round(t / tempo)
+        k = lambda x: {**x, "start_ms": round(x["start_ms"] / tempo), "end_ms": round(x["end_ms"] / tempo)}  # noqa: E731
+        timeline = [k(x) for x in timeline]
+        sentences = [k(x) | ({"words": [k(w) for w in x["words"]]} if x.get("words") else {}) for x in sentences]
     audio = d / "vo.wav"
     loudness_lufs = await asyncio.to_thread(media.normalize_loudness, s.ffmpeg_path, raw_audio, audio)
     voice_id = ctx.get("voice") or getattr(ctx["tts"], "voices", {}).get(job.language, "fixture")
     return {"audio_path": rel(s, audio), "duration_s": round(t / 1000, 3), "scenes": timeline, "segments": sentences,
-            "loudness_lufs": loudness_lufs,
+            "loudness_lufs": loudness_lufs, "tempo": round(max(tempo, 1.0), 3),
             "syllables_per_s_observed": round(ctx["up"]["SCRIPT"]["syllable_count"] / (t / 1000), 2) if t else None,
             "_meta": {"provider": ctx["tts"].name, "model": voice_id}}
 

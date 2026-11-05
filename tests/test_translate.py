@@ -26,7 +26,10 @@ class StubLLM:
 
     async def complete(self, prompt, timeout_s=300):
         self.prompts.append(prompt)
-        if "Compare scene by scene" in prompt:
+        if prompt.startswith("Shorten each"):  # the length pass: a real answer shortens scene 2, says nothing usable for the rest
+            text = ('Sure.\n'
+                    '{"lines": {"2": "Un chatbot solo responde. Un agente de IA recibe una meta, arma su plan y ejecuta cada paso solo.", "3": ""}}')
+        elif "Compare scene by scene" in prompt:
             text = '{"drifted": [{"scene": 5, "why": "ten results became ten people"}]}'
         elif "You localise" in prompt:
             text = (FIX / "script_es.json").read_text(encoding="utf-8")
@@ -77,7 +80,7 @@ def test_translation_reuses_clips_and_stops_at_script_review(tmp_path):
         assert sc["sources"] == src["outputs"]["SCRIPT"]["sources"]  # the source's sources stand
         fidelity = next(x for x in sc["checks"] if x["rule"] == "translation_fidelity")
         assert fidelity["passed"] is False and "scene 5" in fidelity["actual"]
-        assert "Notes from the operator: Next: your cat" in llm.prompts[-2] and "8 scenes" in llm.prompts[-2]
+        assert "Notes from the operator: Next: your cat" in llm.prompts[-3] and "8 scenes" in llm.prompts[-3]  # translate, shorten, back-check
         # the next-episode line is added by code, once, from next_subject (the model dropped it in 4 of 5 real runs)
         assert sc["scenes"][-1]["narration"].endswith("Cuéntalo en los comentarios. Mañana: tu gato.")
         assert next(x for x in sc["checks"] if x["rule"] == "next_episode_line")["passed"] is True
@@ -94,7 +97,13 @@ def test_translation_reuses_clips_and_stops_at_script_review(tmp_path):
         assert all(a["licence"] == "pexels" for a in assets)  # licence ledger carried over
         checks = {x["rule"]: x for x in d["outputs"]["QUALITY"]["checks"]}
         assert checks["qa_review"]["passed"] is True and src_id in checks["qa_review"]["actual"]
-        assert d["job"]["total_cost_usd"] == pytest.approx(0.002)  # two stub calls; nothing paid for clips or QA
+        # translate, one shorten pass (the fixture runs past the Spanish budgets), back-check: three stub calls; nothing
+        # paid for clips or QA. The pass replaced scene 2 only: an empty or missing line keeps the draft's
+        assert d["job"]["total_cost_usd"] == pytest.approx(0.003)
+        shorten = next(p for p in llm.prompts if p.startswith("Shorten each"))
+        assert "at most" in shorten and "Mañana:" in shorten
+        assert d["outputs"]["SCRIPT"]["scenes"][1]["narration"].startswith("Un chatbot solo responde. Un agente")
+        assert d["outputs"]["SCRIPT"]["scenes"][2]["narration"].startswith("Primer cambio: las tareas repetidas")
 
         ok = c.post(f"/jobs/{job_id}/approve", json={"approved_by": "founder"})
         assert ok.status_code == 200, ok.text
@@ -148,3 +157,37 @@ async def test_router_default_and_edge_voice_guard(tmp_path):
 def test_japanese_gets_its_own_font(tmp_path):
     s = settings(tmp_path)
     assert font_for(s, "ja") == s.font_path_ja and font_for(s, "de") == s.font_path
+
+
+def test_last_json_takes_the_self_corrected_answer():
+    from app.pipeline import last_json
+
+    # a real back-check reply (2026-11-05): a first verdict, then "Correction: ..." and a second object
+    text = '{"drifted": [{"scene": 1, "why": "x"}]}\n\nCorrection: on re-check, scene 1 does not drift.\n\n{"drifted": []}'
+    assert last_json(text) == {"drifted": []}
+    assert last_json('Sure: {"a": {"b": 1}} done') == {"a": {"b": 1}}
+    with pytest.raises(ValueError):
+        last_json("no json here")
+
+
+@needs_ffmpeg
+@pytest.mark.anyio
+async def test_long_translated_voice_is_sped_up_and_timings_follow(tmp_path):
+    from types import SimpleNamespace
+
+    from app.pipeline import MAX_TEMPO, stage_voice
+
+    s = settings(tmp_path)
+    (tmp_path / "voice").mkdir()
+    # fixture TTS reads 3 words/s: 66 words = 22 s, against a 15 s target (window 12-18 s)
+    scenes = [{"narration": " ".join(["palabra"] * 33)}, {"narration": " ".join(["palabra"] * 33)}]
+    job = SimpleNamespace(language="es", source_job_id="job_src", target_duration_s=15)
+    ctx = {"settings": s, "job": job, "dir": tmp_path, "tts": FixtureTTS(s.ffmpeg_path), "voice": None,
+           "up": {"SCRIPT": {"scenes": scenes, "syllable_count": 66}}}
+    out = await stage_voice(ctx)
+    assert out["tempo"] == MAX_TEMPO  # 22 s / 17.5 s wanted 1.26x; capped
+    assert out["duration_s"] == pytest.approx(22 / MAX_TEMPO, abs=0.1)
+    assert out["scenes"][1]["start_ms"] == pytest.approx(11000 / MAX_TEMPO, abs=2)
+    assert out["segments"][-1]["end_ms"] <= out["duration_s"] * 1000 + 1
+    job.source_job_id = None  # an original script is never sped up: its length is the writer's to fix
+    assert (await stage_voice(ctx))["tempo"] == 1.0
